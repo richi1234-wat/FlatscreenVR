@@ -163,7 +163,8 @@ double DegToRad(double f) { return f * (3.14159265358979323846 / 180); }
 int KEY_ID_LEFT_TRIGGER, KEY_ID_LEFT_MENU, KEY_ID_LEFT_GRIP, KEY_ID_LEFT_SYSTEM;
 int KEY_ID_RIGHT_TRIGGER, KEY_ID_RIGHT_MENU, KEY_ID_RIGHT_GRIP, KEY_ID_RIGHT_SYSTEM;
 int KEY_ID_CHANGE_WEAPON, KEY_ID_TELEPORT, KEY_ID_MOVE_CONTROLLERS_FORWARD, KEY_ID_MOVE_CONTROLLERS_BACK;
-int KEY_ID_PLAYER_RISE_HIGHER, KEY_ID_PLAYER_RISE_LOWER, KEY_ID_PLAYER_RISE_RESET, KEY_ID_CROUCH, KEY_ID_LEFT_CTRL_MOTION;
+int KEY_ID_PLAYER_RISE_HIGHER, KEY_ID_PLAYER_RISE_LOWER, KEY_ID_PLAYER_RISE_RESET;
+int KEY_ID_CROUCH, KEY_ID_PRONE, KEY_ID_LEFT_CTRL_MOTION;
 int KEY_ID_ROTATION_CONTROLLERS_RESET;
 int KEY_ID_LEFT_HAND_ROTATE, KEY_ID_RIGHT_HAND_ROTATE;
 int KEY_ID_HAND_FORWARD, KEY_ID_HAND_BACK, KEY_ID_HAND_LEFT, KEY_ID_HAND_RIGHT;
@@ -259,8 +260,23 @@ double StepTimer = 0.0;
 
 double SeqOffsetL[3] = { 0, 0, 0 }, SeqOffsetR[3] = { 0, 0, 0 };
 double SeqRotL[3] = { 0, 0, 0 }, SeqRotR[3] = { 0, 0, 0 };
+
+double StartSeqOffsetL[3] = { 0, 0, 0 }, StartSeqOffsetR[3] = { 0, 0, 0 };
+double StartSeqRotL[3] = { 0, 0, 0 }, StartSeqRotR[3] = { 0, 0, 0 };
+double StepInitialOffsetL[3] = { 0, 0, 0 }, StepInitialOffsetR[3] = { 0, 0, 0 };
+double StepInitialRotL[3] = { 0, 0, 0 }, StepInitialRotR[3] = { 0, 0, 0 };
+
 int SeqGripL = -1, SeqGripR = -1;
 int SeqTrigL = -1, SeqTrigR = -1;
+int SeqMenuL = -1, SeqMenuR = -1;
+int SeqSysL = -1, SeqSysR = -1;
+int SeqTrackpadCL = -1, SeqTrackpadCR = -1;
+int SeqTrackpadUL = -1, SeqTrackpadUR = -1;
+int SeqTrackpadDL = -1, SeqTrackpadDR = -1;
+int SeqTrackpadLL = -1, SeqTrackpadLR = -1;
+int SeqTrackpadRL = -1, SeqTrackpadRR = -1;
+int SeqBtnAL = -1, SeqBtnAR = -1;
+int SeqBtnBL = -1, SeqBtnBR = -1;
 
 int KEY_ID_GESTURE_CUSTOM_5, KEY_ID_GESTURE_CUSTOM_6, KEY_ID_GESTURE_CUSTOM_7, KEY_ID_GESTURE_CUSTOM_8, KEY_ID_GESTURE_CUSTOM_9, KEY_ID_GESTURE_CUSTOM_0;
 
@@ -291,6 +307,8 @@ void LoadGestureSequence(const std::string& path) {
         
         if (step.command == "WAIT") {
             ss >> step.duration;
+        } else if (step.command == "RETURN") {
+            ss >> step.duration;
         } else if (step.command == "MOVE" || step.command == "ROTATE") {
             ss >> step.target >> step.axis >> step.value >> step.duration;
         } else if (step.command == "BUTTON") {
@@ -318,7 +336,7 @@ ButtonState Btn_LeftA, Btn_LeftB, Btn_RightA, Btn_RightB;
 ButtonState Btn_LeftTrackpadClick, Btn_RightTrackpadClick;
 ButtonState Btn_Up, Btn_Down, Btn_Left, Btn_Right;
 ButtonState Btn_TurnLeft, Btn_TurnRight, Btn_Teleport, Btn_ChangeWeapon;
-ButtonState Btn_Crouch; 
+ButtonState Btn_Crouch, Btn_Prone; 
 
 bool CheckButton(int keyCode, ButtonState& state) {
     if (keyCode == 0) return false;
@@ -493,6 +511,11 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 			RightHandRotOffset[0] = RightHandRotOffset[1] = RightHandRotOffset[2] = 0.0;
 			LeftXOffset = 0.0; LeftRotateYOffset = 0.0; LeftZOffset = 0.0; LeftZOffset_Target = 0.0;
 			RightXOffset = 0.0; RightYOffset = 0.0; RightZOffset = 0.0; RightZOffset_Target = 0.0;
+            
+            SeqOffsetL[0] = SeqOffsetL[1] = SeqOffsetL[2] = 0;
+            SeqOffsetR[0] = SeqOffsetR[1] = SeqOffsetR[2] = 0;
+            SeqRotL[0] = SeqRotL[1] = SeqRotL[2] = 0;
+            SeqRotR[0] = SeqRotR[1] = SeqRotR[2] = 0;
 		}
 	}
 
@@ -500,13 +523,17 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 	RightHandYaw = 0; RightHandPitch = 0; RightAngleDist = 0; RightRadDist = 0;
 
 	bool isCrouching = HeadsetWindowFocused && CheckButton(KEY_ID_CROUCH, Btn_Crouch);
-	if (isCrouching) HMDPosZ = 0; 
+	bool isProne = HeadsetWindowFocused && CheckButton(KEY_ID_PRONE, Btn_Prone);
+	if (isCrouching || isProne) HMDPosZ = 0; 
 	
-	float targetCrouch = isCrouching ? 0.8f : 0.0f;
+	float targetHeightOffset = 0.0f;
+	if (isCrouching) targetHeightOffset = 0.8f;
+	if (isProne) targetHeightOffset = 1.4f; 
+	
 	float crouchSpeed = 15.0f; 
 	
-	CrouchOffsetZ += (targetCrouch - CrouchOffsetZ) * crouchSpeed * dt;
-	if (std::abs(CrouchOffsetZ - targetCrouch) < 0.001f) CrouchOffsetZ = targetCrouch;
+	CrouchOffsetZ += (targetHeightOffset - CrouchOffsetZ) * crouchSpeed * dt;
+	if (std::abs(CrouchOffsetZ - targetHeightOffset) < 0.001f) CrouchOffsetZ = targetHeightOffset;
 
 	deltaPitch = mouseHMD.Yaw - oldPitch; oldPitch = mouseHMD.Yaw;
 	deltaRoll = mouseHMD.Pitch - oldRoll; oldRoll = mouseHMD.Pitch;
@@ -577,16 +604,23 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 	double yawRad = DegToRad(cameraHMD.Yaw);
 
 	if (FPSModeActive) {
-		// ======================================================================================
-		// LAYER 1 — RIG (camera-local offsets)
-		// ======================================================================================
 		double gunX = FPS_GunOffsetX + RightXOffset;
 		double gunY = FPS_GunOffsetY + RightYOffset;
-		double gunZ = FPS_GunOffsetZ - RightZOffset; // W=forward, Z=backward
+		double gunZ = FPS_GunOffsetZ - RightZOffset;
 
 		double supX = FPS_LeftOffsetX + LeftXOffset;
 		double supY = FPS_LeftOffsetY + LeftRotateYOffset;
 		double supZ = FPS_LeftOffsetZ - LeftZOffset;
+
+		// *** NEW: Apply Gesture MOVE Offsets to FPS Mode ***
+		gunX += SeqOffsetR[0];
+		gunY += SeqOffsetR[2];
+		gunZ -= SeqOffsetR[1];
+
+		supX += SeqOffsetL[0];
+		supY += SeqOffsetL[2];
+		supZ -= SeqOffsetL[1];
+		// *************************************************
 
 		if (AutoSwingActive) {
 			ArmSwingTime += dt * ArmSwingSpeed;
@@ -638,55 +672,41 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 		FirstController->Y = supWZ;
 		FirstController->Z = supWY;
 
-		// ======================================================================================
-		// LAYER 2 — ROTATION (Vector Math + Camera Lock)
-		// ======================================================================================
-		
-		// Camera Basis Vectors
 		double cam_fx = fx, cam_fy = fy, cam_fz = fz;
 		double cam_rx = rx, cam_ry = ry, cam_rz = rz;
 		double cam_ux = ux, cam_uy = uy, cam_uz = uz;
 
-		// Right Hand Offsets
 		double gYaw = DegToRad(FPS_GunZeroYaw + RightHandRotOffset[0] + SeqRotR[0]);
 		double gPitch = DegToRad(FPS_GunZeroPitch + RightHandRotOffset[1] + SeqRotR[1]);
 
-		// Apply Yaw offset
 		double f1x = cam_fx * cos(gYaw) + cam_rx * sin(gYaw);
 		double f1y = cam_fy * cos(gYaw) + cam_ry * sin(gYaw);
 		double f1z = cam_fz * cos(gYaw) + cam_rz * sin(gYaw);
 
-		// Apply Pitch offset
 		double f2x = f1x * cos(gPitch) + cam_ux * sin(gPitch);
 		double f2y = f1y * cos(gPitch) + cam_uy * sin(gPitch);
 		double f2z = f1z * cos(gPitch) + cam_uz * sin(gPitch);
 
-		// Convert back to Euler
 		SecondController->Yaw   = -atan2(-f2x, -f2z) * 57.29577951308232;
 		SecondController->Pitch = -asin(f2y) * 57.29577951308232;
 		SecondController->Roll  = FPS_GunZeroRoll + RightHandRotOffset[2] + SeqRotR[2];
 
-		// Left Hand Offsets
 		double lYaw = DegToRad(FPS_LeftZeroYaw + LeftHandRotOffset[0] + SeqRotL[0]);
 		double lPitch = DegToRad(FPS_LeftZeroPitch + LeftHandRotOffset[1] + SeqRotL[1]);
 
-		// Apply Yaw offset
 		double lf1x = cam_fx * cos(lYaw) + cam_rx * sin(lYaw);
 		double lf1y = cam_fy * cos(lYaw) + cam_ry * sin(lYaw);
 		double lf1z = cam_fz * cos(lYaw) + cam_rz * sin(lYaw);
 
-		// Apply Pitch offset
 		double lf2x = lf1x * cos(lPitch) + cam_ux * sin(lPitch);
 		double lf2y = lf1y * cos(lPitch) + cam_uy * sin(lPitch);
 		double lf2z = lf1z * cos(lPitch) + cam_uz * sin(lPitch);
 
-		// Convert back to Euler
 		FirstController->Yaw    = -atan2(-lf2x, -lf2z) * 57.29577951308232;
 		FirstController->Pitch  = -asin(lf2y) * 57.29577951308232;
 		FirstController->Roll   = FPS_LeftZeroRoll + LeftHandRotOffset[2] + SeqRotL[2];
 
 	} else {
-		// --- NORMAL WORLD SPACE ORBIT MODE ---
 		FirstCtrlPos[0] = (0.4 - LeftRadDist + HandRadDist) * sin(DegToRad(OffsetYPR(OffsetYPR(cameraHMD.Yaw + 180, -17), LeftAngleDist)));
 		FirstCtrlPos[1] = (0.4 - LeftRadDist + HandRadDist) * cos(DegToRad(OffsetYPR(OffsetYPR(cameraHMD.Yaw + 180, -17), LeftAngleDist)));
 		FirstCtrlPos[2] = cameraHMD.Pitch * ZPosSensetive - CrouchOffsetZ + HMDPosZ;
@@ -813,17 +833,30 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 			
 			if (CurrentStepIndex == 0) {
 				StepTimer = 0.0;
-				SeqOffsetL[0] = SeqOffsetL[1] = SeqOffsetL[2] = 0;
-				SeqOffsetR[0] = SeqOffsetR[1] = SeqOffsetR[2] = 0;
-				SeqRotL[0] = SeqRotL[1] = SeqRotL[2] = 0;
-				SeqRotR[0] = SeqRotR[1] = SeqRotR[2] = 0;
+				StartSeqOffsetL[0] = SeqOffsetL[0]; StartSeqOffsetL[1] = SeqOffsetL[1]; StartSeqOffsetL[2] = SeqOffsetL[2];
+				StartSeqOffsetR[0] = SeqOffsetR[0]; StartSeqOffsetR[1] = SeqOffsetR[1]; StartSeqOffsetR[2] = SeqOffsetR[2];
+				StartSeqRotL[0] = SeqRotL[0]; StartSeqRotL[1] = SeqRotL[1]; StartSeqRotL[2] = SeqRotL[2];
+				StartSeqRotR[0] = SeqRotR[0]; StartSeqRotR[1] = SeqRotR[1]; StartSeqRotR[2] = SeqRotR[2];
+
 				SeqGripL = SeqGripR = SeqTrigL = SeqTrigR = -1;
+				SeqMenuL = SeqMenuR = SeqSysL = SeqSysR = -1;
+				SeqTrackpadCL = SeqTrackpadCR = SeqTrackpadUL = SeqTrackpadUR = -1;
+				SeqTrackpadDL = SeqTrackpadDR = SeqTrackpadLL = SeqTrackpadLR = -1;
+				SeqTrackpadRL = SeqTrackpadRR = SeqBtnAL = SeqBtnAR = SeqBtnBL = SeqBtnBR = -1;
 			}
 		}
 	}
 
 	if (CurrentStepIndex >= 0 && CurrentStepIndex < ActiveSequence.size()) {
 		GestureStep& step = ActiveSequence[CurrentStepIndex];
+		
+		if (StepTimer == 0.0) {
+			StepInitialOffsetL[0] = SeqOffsetL[0]; StepInitialOffsetL[1] = SeqOffsetL[1]; StepInitialOffsetL[2] = SeqOffsetL[2];
+			StepInitialOffsetR[0] = SeqOffsetR[0]; StepInitialOffsetR[1] = SeqOffsetR[1]; StepInitialOffsetR[2] = SeqOffsetR[2];
+			StepInitialRotL[0] = SeqRotL[0]; StepInitialRotL[1] = SeqRotL[1]; StepInitialRotL[2] = SeqRotL[2];
+			StepInitialRotR[0] = SeqRotR[0]; StepInitialRotR[1] = SeqRotR[1]; StepInitialRotR[2] = SeqRotR[2];
+		}
+
 		StepTimer += dt; 
 
 		double progress = StepTimer / step.duration;
@@ -831,37 +864,70 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 
 		if (step.command == "MOVE") {
 			if (step.target == "L" || step.target == "B") {
-				if (step.axis == "X") SeqOffsetL[0] = step.value * progress;
-				if (step.axis == "Y") SeqOffsetL[1] = step.value * progress;
-				if (step.axis == "Z") SeqOffsetL[2] = step.value * progress;
+				if (step.axis == "X") SeqOffsetL[0] = StepInitialOffsetL[0] + (step.value * progress);
+				if (step.axis == "Y") SeqOffsetL[1] = StepInitialOffsetL[1] + (step.value * progress);
+				if (step.axis == "Z") SeqOffsetL[2] = StepInitialOffsetL[2] + (step.value * progress);
 			}
 			if (step.target == "R" || step.target == "B") {
-				if (step.axis == "X") SeqOffsetR[0] = step.value * progress;
-				if (step.axis == "Y") SeqOffsetR[1] = step.value * progress;
-				if (step.axis == "Z") SeqOffsetR[2] = step.value * progress;
+				if (step.axis == "X") SeqOffsetR[0] = StepInitialOffsetR[0] + (step.value * progress);
+				if (step.axis == "Y") SeqOffsetR[1] = StepInitialOffsetR[1] + (step.value * progress);
+				if (step.axis == "Z") SeqOffsetR[2] = StepInitialOffsetR[2] + (step.value * progress);
 			}
 		}
 		else if (step.command == "ROTATE") {
 			if (step.target == "L" || step.target == "B") {
-				if (step.axis == "YAW") SeqRotL[0] = step.value * progress;
-				if (step.axis == "PITCH") SeqRotL[1] = step.value * progress;
-				if (step.axis == "ROLL") SeqRotL[2] = step.value * progress;
+				if (step.axis == "YAW") SeqRotL[0] = StepInitialRotL[0] + (step.value * progress);
+				if (step.axis == "PITCH") SeqRotL[1] = StepInitialRotL[1] + (step.value * progress);
+				if (step.axis == "ROLL") SeqRotL[2] = StepInitialRotL[2] + (step.value * progress);
 			}
 			if (step.target == "R" || step.target == "B") {
-				if (step.axis == "YAW") SeqRotR[0] = step.value * progress;
-				if (step.axis == "PITCH") SeqRotR[1] = step.value * progress;
-				if (step.axis == "ROLL") SeqRotR[2] = step.value * progress;
+				if (step.axis == "YAW") SeqRotR[0] = StepInitialRotR[0] + (step.value * progress);
+				if (step.axis == "PITCH") SeqRotR[1] = StepInitialRotR[1] + (step.value * progress);
+				if (step.axis == "ROLL") SeqRotR[2] = StepInitialRotR[2] + (step.value * progress);
 			}
+		}
+		else if (step.command == "RETURN") {
+			SeqOffsetL[0] = StepInitialOffsetL[0] + (StartSeqOffsetL[0] - StepInitialOffsetL[0]) * progress;
+			SeqOffsetL[1] = StepInitialOffsetL[1] + (StartSeqOffsetL[1] - StepInitialOffsetL[1]) * progress;
+			SeqOffsetL[2] = StepInitialOffsetL[2] + (StartSeqOffsetL[2] - StepInitialOffsetL[2]) * progress;
+			SeqRotL[0] = StepInitialRotL[0] + (StartSeqRotL[0] - StepInitialRotL[0]) * progress;
+			SeqRotL[1] = StepInitialRotL[1] + (StartSeqRotL[1] - StepInitialRotL[1]) * progress;
+			SeqRotL[2] = StepInitialRotL[2] + (StartSeqRotL[2] - StepInitialRotL[2]) * progress;
+
+			SeqOffsetR[0] = StepInitialOffsetR[0] + (StartSeqOffsetR[0] - StepInitialOffsetR[0]) * progress;
+			SeqOffsetR[1] = StepInitialOffsetR[1] + (StartSeqOffsetR[1] - StepInitialOffsetR[1]) * progress;
+			SeqOffsetR[2] = StepInitialOffsetR[2] + (StartSeqOffsetR[2] - StepInitialOffsetR[2]) * progress;
+			SeqRotR[0] = StepInitialRotR[0] + (StartSeqRotR[0] - StepInitialRotR[0]) * progress;
+			SeqRotR[1] = StepInitialRotR[1] + (StartSeqRotR[1] - StepInitialRotR[1]) * progress;
+			SeqRotR[2] = StepInitialRotR[2] + (StartSeqRotR[2] - StepInitialRotR[2]) * progress;
 		}
 		else if (step.command == "BUTTON") {
 			int btnState = step.value > 0.0 ? 1 : 0;
 			if (step.target == "L" || step.target == "B") {
 				if (step.axis == "GRIP") SeqGripL = btnState;
-				if (step.axis == "TRIG") SeqTrigL = btnState;
+				else if (step.axis == "TRIG") SeqTrigL = btnState;
+				else if (step.axis == "MENU") SeqMenuL = btnState;
+				else if (step.axis == "SYSTEM") SeqSysL = btnState;
+				else if (step.axis == "TRACKPAD_C") SeqTrackpadCL = btnState;
+				else if (step.axis == "TRACKPAD_R") SeqTrackpadRL = btnState;
+				else if (step.axis == "TRACKPAD_L") SeqTrackpadLL = btnState;
+				else if (step.axis == "TRACKPAD_U") SeqTrackpadUL = btnState;
+				else if (step.axis == "TRACKPAD_D") SeqTrackpadDL = btnState;
+				else if (step.axis == "BTN_A") SeqBtnAL = btnState;
+				else if (step.axis == "BTN_B") SeqBtnBL = btnState;
 			}
 			if (step.target == "R" || step.target == "B") {
 				if (step.axis == "GRIP") SeqGripR = btnState;
-				if (step.axis == "TRIG") SeqTrigR = btnState;
+				else if (step.axis == "TRIG") SeqTrigR = btnState;
+				else if (step.axis == "MENU") SeqMenuR = btnState;
+				else if (step.axis == "SYSTEM") SeqSysR = btnState;
+				else if (step.axis == "TRACKPAD_C") SeqTrackpadCR = btnState;
+				else if (step.axis == "TRACKPAD_R") SeqTrackpadRR = btnState;
+				else if (step.axis == "TRACKPAD_L") SeqTrackpadLR = btnState;
+				else if (step.axis == "TRACKPAD_U") SeqTrackpadUR = btnState;
+				else if (step.axis == "TRACKPAD_D") SeqTrackpadDR = btnState;
+				else if (step.axis == "BTN_A") SeqBtnAR = btnState;
+				else if (step.axis == "BTN_B") SeqBtnBR = btnState;
 			}
 		}
 
@@ -872,11 +938,11 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 			if (CurrentStepIndex >= ActiveSequence.size()) {
 				CurrentStepIndex = -1; 
 				
-				SeqOffsetL[0] = SeqOffsetL[1] = SeqOffsetL[2] = 0;
-				SeqOffsetR[0] = SeqOffsetR[1] = SeqOffsetR[2] = 0;
-				SeqRotL[0] = SeqRotL[1] = SeqRotL[2] = 0;
-				SeqRotR[0] = SeqRotR[1] = SeqRotR[2] = 0;
 				SeqGripL = SeqGripR = SeqTrigL = SeqTrigR = -1;
+				SeqMenuL = SeqMenuR = SeqSysL = SeqSysR = -1;
+				SeqTrackpadCL = SeqTrackpadCR = SeqTrackpadUL = SeqTrackpadUR = -1;
+				SeqTrackpadDL = SeqTrackpadDR = SeqTrackpadLL = SeqTrackpadLR = -1;
+				SeqTrackpadRL = SeqTrackpadRR = SeqBtnAL = SeqBtnAR = SeqBtnBL = SeqBtnBR = -1;
 			}
 		}
 	}
@@ -899,17 +965,54 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 	else if (SeqGripL == 0) FirstController->Buttons &= ~GRIP_BTN;
 	if (SeqTrigL == 1) FirstController->Trigger = 1.0f;
 	else if (SeqTrigL == 0) FirstController->Trigger = 0.0f;
+	if (SeqMenuL == 1) FirstController->Buttons |= MENU_BTN;
+	else if (SeqMenuL == 0) FirstController->Buttons &= ~MENU_BTN;
+	if (SeqSysL == 1) FirstController->Buttons |= SYS_BTN;
+	else if (SeqSysL == 0) FirstController->Buttons &= ~SYS_BTN;
+	if (SeqBtnAL == 1) FirstController->ButtonA = true;
+	else if (SeqBtnAL == 0) FirstController->ButtonA = false;
+	if (SeqBtnBL == 1) FirstController->ButtonB = true;
+	else if (SeqBtnBL == 0) FirstController->ButtonB = false;
+
+	if (SeqTrackpadCL == 1) FirstController->Buttons |= THUMB_BTN;
+	else if (SeqTrackpadCL == 0 && SeqTrackpadUL != 1 && SeqTrackpadDL != 1 && SeqTrackpadLL != 1 && SeqTrackpadRL != 1) FirstController->Buttons &= ~THUMB_BTN;
+	if (SeqTrackpadUL == 1) { FirstController->AxisY = 1; FirstController->Buttons |= THUMB_BTN; }
+	else if (SeqTrackpadUL == 0 && SeqTrackpadDL != 1) FirstController->AxisY = 0;
+	if (SeqTrackpadDL == 1) { FirstController->AxisY = -1; FirstController->Buttons |= THUMB_BTN; }
+	else if (SeqTrackpadDL == 0 && SeqTrackpadUL != 1) FirstController->AxisY = 0;
+	if (SeqTrackpadRL == 1) { FirstController->AxisX = 1; FirstController->Buttons |= THUMB_BTN; }
+	else if (SeqTrackpadRL == 0 && SeqTrackpadLL != 1) FirstController->AxisX = 0;
+	if (SeqTrackpadLL == 1) { FirstController->AxisX = -1; FirstController->Buttons |= THUMB_BTN; }
+	else if (SeqTrackpadLL == 0 && SeqTrackpadRL != 1) FirstController->AxisX = 0;
 
 	if (SeqGripR == 1) SecondController->Buttons |= GRIP_BTN;
 	else if (SeqGripR == 0) SecondController->Buttons &= ~GRIP_BTN;
 	if (SeqTrigR == 1) SecondController->Trigger = 1.0f;
 	else if (SeqTrigR == 0) SecondController->Trigger = 0.0f;
+	if (SeqMenuR == 1) SecondController->Buttons |= MENU_BTN;
+	else if (SeqMenuR == 0) SecondController->Buttons &= ~MENU_BTN;
+	if (SeqSysR == 1) SecondController->Buttons |= SYS_BTN;
+	else if (SeqSysR == 0) SecondController->Buttons &= ~SYS_BTN;
+	if (SeqBtnAR == 1) SecondController->ButtonA = true;
+	else if (SeqBtnAR == 0) SecondController->ButtonA = false;
+	if (SeqBtnBR == 1) SecondController->ButtonB = true;
+	else if (SeqBtnBR == 0) SecondController->ButtonB = false;
+
+	if (SeqTrackpadCR == 1) SecondController->Buttons |= THUMB_BTN;
+	else if (SeqTrackpadCR == 0 && SeqTrackpadUR != 1 && SeqTrackpadDR != 1 && SeqTrackpadLR != 1 && SeqTrackpadRR != 1) SecondController->Buttons &= ~THUMB_BTN;
+	if (SeqTrackpadUR == 1) { SecondController->AxisY = 1; SecondController->Buttons |= THUMB_BTN; }
+	else if (SeqTrackpadUR == 0 && SeqTrackpadDR != 1) SecondController->AxisY = 0;
+	if (SeqTrackpadDR == 1) { SecondController->AxisY = -1; SecondController->Buttons |= THUMB_BTN; }
+	else if (SeqTrackpadDR == 0 && SeqTrackpadUR != 1) SecondController->AxisY = 0;
+	if (SeqTrackpadRR == 1) { SecondController->AxisX = 1; SecondController->Buttons |= THUMB_BTN; }
+	else if (SeqTrackpadRR == 0 && SeqTrackpadLR != 1) SecondController->AxisX = 0;
+	if (SeqTrackpadLR == 1) { SecondController->AxisX = -1; SecondController->Buttons |= THUMB_BTN; }
+	else if (SeqTrackpadLR == 0 && SeqTrackpadRR != 1) SecondController->AxisX = 0;
 
 	if (LeftHandLocked) {
 		FirstController->X = LockedLeftPos[0];
 		FirstController->Y = LockedLeftPos[1];
 		FirstController->Z = LockedLeftPos[2];
-		
 		if (!LeftHandIsRotating) {
 			FirstController->Yaw = LockedLeftYaw;
 			FirstController->Pitch = LockedLeftPitch;
@@ -920,13 +1023,149 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 		SecondController->X = LockedRightPos[0];
 		SecondController->Y = LockedRightPos[1];
 		SecondController->Z = LockedRightPos[2];
-		
 		if (!RightHandIsRotating) {
 			SecondController->Yaw = LockedRightYaw;
 			SecondController->Pitch = LockedRightPitch;
 			SecondController->Roll = LockedRightRoll;
 		}
 	}
+}
+
+void LoadConfig() {
+    if (g_IniPathStr.empty()) return;
+    CIniReader IniFile((char*)g_IniPathStr.c_str());
+
+    ControllerType = IniFile.ReadString("Main", "ControllerType", "vive_controller");
+    HMDConnected = IniFile.ReadBoolean("Main", "HMD", true);
+    VRMode = IniFile.ReadBoolean("Main", "VRMode", false);
+    VRAimingAngleOffset = IniFile.ReadFloat("Main", "VRAimingAngleOffset", 0);
+    
+    ScrollPushPullSpeed = IniFile.ReadFloat("Main", "ScrollPushPullSpeed", 0.0005f);
+    HandMoveSensitivity = IniFile.ReadFloat("Main", "HandMoveSensitivity", 0.5f);
+    RotationSpeed = IniFile.ReadFloat("Main", "RotationSpeed", 0.05f);
+    FineTuneMultiplier = IniFile.ReadFloat("Main", "FineTuneMultiplier", 0.1f);
+    mouseSensetiveYaw = IniFile.ReadFloat("Main", "AxisX", 0.05f);
+    mouseSensetivePitch = IniFile.ReadFloat("Main", "AxisY", 0.04f);
+    ZPosSensetive = IniFile.ReadFloat("Main", "AxisZ", 0.009f);
+    HandCenterOffsetX = IniFile.ReadFloat("Main", "HandCenterOffsetX", 0.1f);
+
+    FPS_HandCenterOffsetX = IniFile.ReadFloat("FPS_Mode", "FPS_HandCenterOffsetX", 0.0f);
+    FPS_HandCenterOffsetZ = IniFile.ReadFloat("FPS_Mode", "FPS_HandCenterOffsetZ", 0.0f);
+    FPS_GunOffsetX = IniFile.ReadFloat("FPS_Mode", "GunOffsetX", 0.0f);
+    FPS_GunOffsetY = IniFile.ReadFloat("FPS_Mode", "GunOffsetY", -0.1f);
+    FPS_GunOffsetZ = IniFile.ReadFloat("FPS_Mode", "GunOffsetZ", 0.3f);
+    FPS_LeftOffsetX = IniFile.ReadFloat("FPS_Mode", "LeftOffsetX", -0.15f);
+    FPS_LeftOffsetY = IniFile.ReadFloat("FPS_Mode", "LeftOffsetY", -0.15f);
+    FPS_LeftOffsetZ = IniFile.ReadFloat("FPS_Mode", "LeftOffsetZ", 0.15f);
+    FPS_GunZeroYaw = IniFile.ReadFloat("FPS_Mode", "GunZeroYaw", 0.0f);
+    FPS_GunZeroPitch = IniFile.ReadFloat("FPS_Mode", "GunZeroPitch", 0.0f);
+    FPS_GunZeroRoll = IniFile.ReadFloat("FPS_Mode", "GunZeroRoll", 0.0f);
+    FPS_LeftZeroYaw = IniFile.ReadFloat("FPS_Mode", "LeftZeroYaw", 0.0f);
+    FPS_LeftZeroPitch = IniFile.ReadFloat("FPS_Mode", "LeftZeroPitch", 0.0f);
+    FPS_LeftZeroRoll = IniFile.ReadFloat("FPS_Mode", "LeftZeroRoll", 0.0f);
+
+    AutoSwingHoldMode = IniFile.ReadBoolean("FPS_Mode", "AutoSwingHoldMode", IniFile.ReadBoolean("Main", "AutoSwingHoldMode", true));
+
+    g_DriverKeys.clear(); 
+    std::string swallowStr = IniFile.ReadString("SwallowKeys", "Keys", "");
+    std::stringstream ss(swallowStr);
+    std::string token;
+    while (std::getline(ss, token, ',')) {
+        token.erase(std::remove_if(token.begin(), token.end(), ::isspace), token.end());
+        if (!token.empty()) {
+            int code = KeyNameToKeyCode(token);
+            if (code != 0) g_DriverKeys.push_back(code);
+        }
+    }
+
+    KEY_ID_LEFT_TRIGGER = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT_TRIGGER", "MOUSE-LEFT-BTN"));
+    KEY_ID_LEFT_MENU = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT_MENU", "TAB"));
+    KEY_ID_LEFT_GRIP = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT_GRIP", "Q"));
+    KEY_ID_LEFT_SYSTEM = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT_SYSTEM", "3"));
+    KEY_ID_RIGHT_TRIGGER = KeyNameToKeyCode(IniFile.ReadString("Keys", "RIGHT_TRIGGER", "MOUSE-RIGHT-BTN"));
+    KEY_ID_RIGHT_MENU = KeyNameToKeyCode(IniFile.ReadString("Keys", "RIGHT_MENU", "R"));
+    KEY_ID_RIGHT_GRIP = KeyNameToKeyCode(IniFile.ReadString("Keys", "RIGHT_GRIP", "E"));
+    KEY_ID_RIGHT_SYSTEM = KeyNameToKeyCode(IniFile.ReadString("Keys", "RIGHT_SYSTEM", "4"));
+    KEY_ID_CHANGE_WEAPON = KeyNameToKeyCode(IniFile.ReadString("Keys", "CHANGE_WEAPON", "MOUSE-MIDDLE-BTN"));
+    KEY_ID_TELEPORT = KeyNameToKeyCode(IniFile.ReadString("Keys", "TELEPORT", "SPACE"));
+    KEY_ID_MOVE_CONTROLLERS_FORWARD = KeyNameToKeyCode(IniFile.ReadString("Keys", "MOVE_CONTROLLERS_FORWARD", "INSERT"));
+    KEY_ID_MOVE_CONTROLLERS_BACK = KeyNameToKeyCode(IniFile.ReadString("Keys", "MOVE_CONTROLLERS_BACK", "HOME"));
+    KEY_ID_PLAYER_RISE_HIGHER = KeyNameToKeyCode(IniFile.ReadString("Keys", "PLAYER_RISE_HIGHER", "PAGE-UP"));
+    KEY_ID_PLAYER_RISE_LOWER = KeyNameToKeyCode(IniFile.ReadString("Keys", "PLAYER_RISE_LOWER", "PAGE-DOWN"));
+    KEY_ID_PLAYER_RISE_RESET = KeyNameToKeyCode(IniFile.ReadString("Keys", "PLAYER_RISE_RESET", "NUMPAD-MINUS"));
+    KEY_ID_CROUCH = KeyNameToKeyCode(IniFile.ReadString("Keys", "CROUCH", "CTRL"));
+    KEY_ID_PRONE = KeyNameToKeyCode(IniFile.ReadString("Keys", "PRONE", "~"));
+    KEY_ID_LEFT_CTRL_MOTION = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT_CTRL_MOTION", "NONE"));
+    KEY_ID_ROTATION_CONTROLLERS_RESET = KeyNameToKeyCode(IniFile.ReadString("Keys", "ROTATION_CONTROLLERS_RESET", "Y"));
+    KEY_ID_FINE_TUNE = KeyNameToKeyCode(IniFile.ReadString("Keys", "FINE_TUNE", "H"));
+    KEY_ID_FPS_MODE_TOGGLE = KeyNameToKeyCode(IniFile.ReadString("Keys", "FPS_MODE_TOGGLE", "J"));
+    KEY_ID_AUTO_SWING_TOGGLE = KeyNameToKeyCode(IniFile.ReadString("Keys", "AUTO_SWING_TOGGLE", "SHIFT"));
+    KEY_ID_PUMP_ACTION = KeyNameToKeyCode(IniFile.ReadString("Keys", "PUMP_ACTION", "MOUSE-SIDE1-BTN"));
+    
+    KEY_ID_LEFT_HAND_LOCK = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT_HAND_LOCK", "L"));
+    KEY_ID_RIGHT_HAND_LOCK = KeyNameToKeyCode(IniFile.ReadString("Keys", "RIGHT_HAND_LOCK", "SEMICOLON"));
+
+    KEY_ID_HMD_FORWARD = KeyNameToKeyCode(IniFile.ReadString("Keys", "HMD_FORWARD", "NUMPAD8"));
+    KEY_ID_HMD_BACK = KeyNameToKeyCode(IniFile.ReadString("Keys", "HMD_BACK", "NUMPAD5"));
+    KEY_ID_HMD_LEFT = KeyNameToKeyCode(IniFile.ReadString("Keys", "HMD_LEFT", "NUMPAD4"));
+    KEY_ID_HMD_RIGHT = KeyNameToKeyCode(IniFile.ReadString("Keys", "HMD_RIGHT", "NUMPAD6"));
+    KEY_ID_HMD_MOVE_RESET = KeyNameToKeyCode(IniFile.ReadString("Keys", "HMD_MOVE_RESET", "U"));
+    KEY_ID_FREELOOK = KeyNameToKeyCode(IniFile.ReadString("Keys", "FREELOOK", "ALT"));
+    
+    KEY_ID_LEFT_HAND_ROTATE = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT_HAND_ROTATE", "X"));
+    KEY_ID_RIGHT_HAND_ROTATE = KeyNameToKeyCode(IniFile.ReadString("Keys", "RIGHT_HAND_ROTATE", "C"));
+    KEY_ID_HAND_FORWARD = KeyNameToKeyCode(IniFile.ReadString("Keys", "HAND_FORWARD", "W"));
+    KEY_ID_HAND_BACK = KeyNameToKeyCode(IniFile.ReadString("Keys", "HAND_BACK", "Z"));
+    KEY_ID_HAND_LEFT = KeyNameToKeyCode(IniFile.ReadString("Keys", "HAND_LEFT", "A"));
+    KEY_ID_HAND_RIGHT = KeyNameToKeyCode(IniFile.ReadString("Keys", "HAND_RIGHT", "D"));
+    KEY_ID_MOTION_MODE_MOVE_UP = KeyNameToKeyCode(IniFile.ReadString("Keys", "MOTION_MODE_MOVE_UP", "1"));
+    KEY_ID_MOTION_MODE_MOVE_DOWN = KeyNameToKeyCode(IniFile.ReadString("Keys", "MOTION_MODE_MOVE_DOWN", "2"));
+    KEY_ID_LEFT_TRACKPAD_CLICK = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT_TRACKPAD_CLICK", "F"));
+    KEY_ID_RIGHT_TRACKPAD_CLICK = KeyNameToKeyCode(IniFile.ReadString("Keys", "RIGHT_TRACKPAD_CLICK", "V"));
+    KEY_ID_TURN_LEFT = KeyNameToKeyCode(IniFile.ReadString("Keys", "TURN_LEFT", "B"));
+    KEY_ID_TURN_RIGHT = KeyNameToKeyCode(IniFile.ReadString("Keys", "TURN_RIGHT", "N"));
+    KEY_ID_UP = KeyNameToKeyCode(IniFile.ReadString("Keys", "UP", "UP"));
+    KEY_ID_DOWN = KeyNameToKeyCode(IniFile.ReadString("Keys", "DOWN", "DOWN"));
+    KEY_ID_LEFT = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT", "LEFT"));
+    KEY_ID_RIGHT = KeyNameToKeyCode(IniFile.ReadString("Keys", "RIGHT", "RIGHT"));
+
+    KEY_ID_LEFT_A = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT_A", "T"));
+    KEY_ID_LEFT_B = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT_B", "TAB"));
+    KEY_ID_RIGHT_A = KeyNameToKeyCode(IniFile.ReadString("Keys", "RIGHT_A", "G"));
+    KEY_ID_RIGHT_B = KeyNameToKeyCode(IniFile.ReadString("Keys", "RIGHT_B", "R"));
+
+    KEY_ID_GESTURE_CUSTOM_5 = KeyNameToKeyCode(IniFile.ReadString("Keys", "GESTURE_CUSTOM_5", "5"));
+    KEY_ID_GESTURE_CUSTOM_6 = KeyNameToKeyCode(IniFile.ReadString("Keys", "GESTURE_CUSTOM_6", "6"));
+    KEY_ID_GESTURE_CUSTOM_7 = KeyNameToKeyCode(IniFile.ReadString("Keys", "GESTURE_CUSTOM_7", "7"));
+    KEY_ID_GESTURE_CUSTOM_8 = KeyNameToKeyCode(IniFile.ReadString("Keys", "GESTURE_CUSTOM_8", "8"));
+    KEY_ID_GESTURE_CUSTOM_9 = KeyNameToKeyCode(IniFile.ReadString("Keys", "GESTURE_CUSTOM_9", "9"));
+    KEY_ID_GESTURE_CUSTOM_0 = KeyNameToKeyCode(IniFile.ReadString("Keys", "GESTURE_CUSTOM_0", "0"));
+
+    std::string modeStr;
+    modeStr = IniFile.ReadString("Modes", "LEFT_TRIGGER_MODE", IniFile.ReadString("Toggles", "LEFT_TRIGGER_MODE", "HOLD")); Btn_LeftTrigger.isToggle = (modeStr == "TOGGLE");
+    modeStr = IniFile.ReadString("Modes", "LEFT_GRIP_MODE", IniFile.ReadString("Toggles", "LEFT_GRIP_MODE", "HOLD")); Btn_LeftGrip.isToggle = (modeStr == "TOGGLE");
+    modeStr = IniFile.ReadString("Modes", "LEFT_MENU_MODE", IniFile.ReadString("Toggles", "LEFT_MENU_MODE", "HOLD")); Btn_LeftMenu.isToggle = (modeStr == "TOGGLE");
+    modeStr = IniFile.ReadString("Modes", "LEFT_SYSTEM_MODE", IniFile.ReadString("Toggles", "LEFT_SYSTEM_MODE", "HOLD")); Btn_LeftSystem.isToggle = (modeStr == "TOGGLE");
+    modeStr = IniFile.ReadString("Modes", "RIGHT_TRIGGER_MODE", IniFile.ReadString("Toggles", "RIGHT_TRIGGER_MODE", "HOLD")); Btn_RightTrigger.isToggle = (modeStr == "TOGGLE");
+    modeStr = IniFile.ReadString("Modes", "RIGHT_GRIP_MODE", IniFile.ReadString("Toggles", "RIGHT_GRIP_MODE", "HOLD")); Btn_RightGrip.isToggle = (modeStr == "TOGGLE");
+    modeStr = IniFile.ReadString("Modes", "RIGHT_MENU_MODE", IniFile.ReadString("Toggles", "RIGHT_MENU_MODE", "HOLD")); Btn_RightMenu.isToggle = (modeStr == "TOGGLE");
+    modeStr = IniFile.ReadString("Modes", "RIGHT_SYSTEM_MODE", IniFile.ReadString("Toggles", "RIGHT_SYSTEM_MODE", "HOLD")); Btn_RightSystem.isToggle = (modeStr == "TOGGLE");
+    modeStr = IniFile.ReadString("Modes", "LEFT_A_MODE", IniFile.ReadString("Toggles", "LEFT_A_MODE", "HOLD")); Btn_LeftA.isToggle = (modeStr == "TOGGLE");
+    modeStr = IniFile.ReadString("Modes", "LEFT_B_MODE", IniFile.ReadString("Toggles", "LEFT_B_MODE", "HOLD")); Btn_LeftB.isToggle = (modeStr == "TOGGLE");
+    modeStr = IniFile.ReadString("Modes", "RIGHT_A_MODE", IniFile.ReadString("Toggles", "RIGHT_A_MODE", "HOLD")); Btn_RightA.isToggle = (modeStr == "TOGGLE");
+    modeStr = IniFile.ReadString("Modes", "RIGHT_B_MODE", IniFile.ReadString("Toggles", "RIGHT_B_MODE", "HOLD")); Btn_RightB.isToggle = (modeStr == "TOGGLE");
+    modeStr = IniFile.ReadString("Modes", "LEFT_TRACKPAD_CLICK_MODE", IniFile.ReadString("Toggles", "LEFT_TRACKPAD_CLICK_MODE", "HOLD")); Btn_LeftTrackpadClick.isToggle = (modeStr == "TOGGLE");
+    modeStr = IniFile.ReadString("Modes", "RIGHT_TRACKPAD_CLICK_MODE", IniFile.ReadString("Toggles", "RIGHT_TRACKPAD_CLICK_MODE", "HOLD")); Btn_RightTrackpadClick.isToggle = (modeStr == "TOGGLE");
+    modeStr = IniFile.ReadString("Modes", "UP_MODE", IniFile.ReadString("Toggles", "UP_MODE", "HOLD")); Btn_Up.isToggle = (modeStr == "TOGGLE");
+    modeStr = IniFile.ReadString("Modes", "DOWN_MODE", IniFile.ReadString("Toggles", "DOWN_MODE", "HOLD")); Btn_Down.isToggle = (modeStr == "TOGGLE");
+    modeStr = IniFile.ReadString("Modes", "LEFT_MODE", IniFile.ReadString("Toggles", "LEFT_MODE", "HOLD")); Btn_Left.isToggle = (modeStr == "TOGGLE");
+    modeStr = IniFile.ReadString("Modes", "RIGHT_MODE", IniFile.ReadString("Toggles", "RIGHT_MODE", "HOLD")); Btn_Right.isToggle = (modeStr == "TOGGLE");
+    modeStr = IniFile.ReadString("Modes", "TURN_LEFT_MODE", IniFile.ReadString("Toggles", "TURN_LEFT_MODE", "HOLD")); Btn_TurnLeft.isToggle = (modeStr == "TOGGLE");
+    modeStr = IniFile.ReadString("Modes", "TURN_RIGHT_MODE", IniFile.ReadString("Toggles", "TURN_RIGHT_MODE", "HOLD")); Btn_TurnRight.isToggle = (modeStr == "TOGGLE");
+    modeStr = IniFile.ReadString("Modes", "TELEPORT_MODE", IniFile.ReadString("Toggles", "TELEPORT_MODE", "HOLD")); Btn_Teleport.isToggle = (modeStr == "TOGGLE");
+    modeStr = IniFile.ReadString("Modes", "CHANGE_WEAPON_MODE", IniFile.ReadString("Toggles", "CHANGE_WEAPON_MODE", "HOLD")); Btn_ChangeWeapon.isToggle = (modeStr == "TOGGLE");
+    modeStr = IniFile.ReadString("Modes", "CROUCH_MODE", IniFile.ReadString("Toggles", "CROUCH_MODE", "TOGGLE")); Btn_Crouch.isToggle = (modeStr == "TOGGLE");
+    modeStr = IniFile.ReadString("Modes", "PRONE_MODE", IniFile.ReadString("Toggles", "PRONE_MODE", "TOGGLE")); Btn_Prone.isToggle = (modeStr == "TOGGLE"); 
 }
 
 class CSampleDeviceDriver : public vr::ITrackedDeviceServerDriver, public vr::IVRDisplayComponent
@@ -1301,147 +1540,8 @@ EVRInitError CServerDriver_Sample::Init(vr::IVRDriverContext* pDriverContext)
 	g_IniPathStr = std::string(configPath);
 	
 	ctrlsConnected = true;
-	CIniReader IniFile((char*)configPath);
-
-	ControllerType = IniFile.ReadString("Main", "ControllerType", "vive_controller");
-
-	KEY_ID_LEFT_TRIGGER = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT_TRIGGER", "SHIFT"));
-	KEY_ID_LEFT_MENU = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT_MENU", "ENTER"));
-	KEY_ID_LEFT_GRIP = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT_GRIP", "ESCAPE"));
-	KEY_ID_LEFT_SYSTEM = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT_SYSTEM", "F9"));
-	KEY_ID_RIGHT_TRIGGER = KeyNameToKeyCode(IniFile.ReadString("Keys", "RIGHT_TRIGGER", "MOUSE-LEFT-BTN"));
-	KEY_ID_RIGHT_MENU = KeyNameToKeyCode(IniFile.ReadString("Keys", "RIGHT_MENU", "NUMPAD-DEL"));
-	KEY_ID_RIGHT_GRIP = KeyNameToKeyCode(IniFile.ReadString("Keys", "RIGHT_GRIP", "NUMPAD0"));
-	KEY_ID_RIGHT_SYSTEM = KeyNameToKeyCode(IniFile.ReadString("Keys", "RIGHT_SYSTEM", "4"));
-	KEY_ID_CHANGE_WEAPON = KeyNameToKeyCode(IniFile.ReadString("Keys", "CHANGE_WEAPON", "MOUSE-MIDDLE-BTN"));
-	KEY_ID_TELEPORT = KeyNameToKeyCode(IniFile.ReadString("Keys", "TELEPORT", "SPACE"));
-	KEY_ID_MOVE_CONTROLLERS_FORWARD = KeyNameToKeyCode(IniFile.ReadString("Keys", "MOVE_CONTROLLERS_FORWARD", "INSERT"));
-	KEY_ID_MOVE_CONTROLLERS_BACK = KeyNameToKeyCode(IniFile.ReadString("Keys", "MOVE_CONTROLLERS_BACK", "HOME"));
-	KEY_ID_PLAYER_RISE_HIGHER = KeyNameToKeyCode(IniFile.ReadString("Keys", "PLAYER_RISE_HIGHER", "PAGE-UP"));
-	KEY_ID_PLAYER_RISE_LOWER = KeyNameToKeyCode(IniFile.ReadString("Keys", "PLAYER_RISE_LOWER", "PAGE-DOWN"));
-	KEY_ID_PLAYER_RISE_RESET = KeyNameToKeyCode(IniFile.ReadString("Keys", "PLAYER_RISE_RESET", "NUMPAD-MINUS"));
-	KEY_ID_CROUCH = KeyNameToKeyCode(IniFile.ReadString("Keys", "CROUCH", "CTRL"));
-	KEY_ID_LEFT_CTRL_MOTION = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT_CTRL_MOTION", "NONE"));
-	KEY_ID_ROTATION_CONTROLLERS_RESET = KeyNameToKeyCode(IniFile.ReadString("Keys", "ROTATION_CONTROLLERS_RESET", "Y"));
-	KEY_ID_FINE_TUNE = KeyNameToKeyCode(IniFile.ReadString("Keys", "FINE_TUNE", "RCTRL"));
-	KEY_ID_FPS_MODE_TOGGLE = KeyNameToKeyCode(IniFile.ReadString("Keys", "FPS_MODE_TOGGLE", "J"));
-	KEY_ID_AUTO_SWING_TOGGLE = KeyNameToKeyCode(IniFile.ReadString("Keys", "AUTO_SWING_TOGGLE", "K"));
-	KEY_ID_PUMP_ACTION = KeyNameToKeyCode(IniFile.ReadString("Keys", "PUMP_ACTION", "MOUSE-SIDE1-BTN"));
 	
-	KEY_ID_LEFT_HAND_LOCK = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT_HAND_LOCK", "L"));
-	KEY_ID_RIGHT_HAND_LOCK = KeyNameToKeyCode(IniFile.ReadString("Keys", "RIGHT_HAND_LOCK", "SEMICOLON"));
-
-	KEY_ID_HMD_FORWARD = KeyNameToKeyCode(IniFile.ReadString("Keys", "HMD_FORWARD", "NUMPAD8"));
-	KEY_ID_HMD_BACK = KeyNameToKeyCode(IniFile.ReadString("Keys", "HMD_BACK", "NUMPAD5"));
-	KEY_ID_HMD_LEFT = KeyNameToKeyCode(IniFile.ReadString("Keys", "HMD_LEFT", "NUMPAD4"));
-	KEY_ID_HMD_RIGHT = KeyNameToKeyCode(IniFile.ReadString("Keys", "HMD_RIGHT", "NUMPAD6"));
-	KEY_ID_HMD_MOVE_RESET = KeyNameToKeyCode(IniFile.ReadString("Keys", "HMD_MOVE_RESET", "U"));
-	KEY_ID_FREELOOK = KeyNameToKeyCode(IniFile.ReadString("Keys", "FREELOOK", "ALT"));
-	
-	KEY_ID_LEFT_HAND_ROTATE = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT_HAND_ROTATE", "X"));
-	KEY_ID_RIGHT_HAND_ROTATE = KeyNameToKeyCode(IniFile.ReadString("Keys", "RIGHT_HAND_ROTATE", "C"));
-	KEY_ID_HAND_FORWARD = KeyNameToKeyCode(IniFile.ReadString("Keys", "HAND_FORWARD", "W"));
-	KEY_ID_HAND_BACK = KeyNameToKeyCode(IniFile.ReadString("Keys", "HAND_BACK", "Z"));
-	KEY_ID_HAND_LEFT = KeyNameToKeyCode(IniFile.ReadString("Keys", "HAND_LEFT", "A"));
-	KEY_ID_HAND_RIGHT = KeyNameToKeyCode(IniFile.ReadString("Keys", "HAND_RIGHT", "D"));
-	KEY_ID_MOTION_MODE_MOVE_UP = KeyNameToKeyCode(IniFile.ReadString("Keys", "MOTION_MODE_MOVE_UP", "1"));
-	KEY_ID_MOTION_MODE_MOVE_DOWN = KeyNameToKeyCode(IniFile.ReadString("Keys", "MOTION_MODE_MOVE_DOWN", "2"));
-	KEY_ID_LEFT_TRACKPAD_CLICK = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT_TRACKPAD_CLICK", "F"));
-	KEY_ID_RIGHT_TRACKPAD_CLICK = KeyNameToKeyCode(IniFile.ReadString("Keys", "RIGHT_TRACKPAD_CLICK", "V"));
-	KEY_ID_TURN_LEFT = KeyNameToKeyCode(IniFile.ReadString("Keys", "TURN_LEFT", "B"));
-	KEY_ID_TURN_RIGHT = KeyNameToKeyCode(IniFile.ReadString("Keys", "TURN_RIGHT", "N"));
-	KEY_ID_UP = KeyNameToKeyCode(IniFile.ReadString("Keys", "UP", "UP"));
-	KEY_ID_DOWN = KeyNameToKeyCode(IniFile.ReadString("Keys", "DOWN", "DOWN"));
-	KEY_ID_LEFT = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT", "LEFT"));
-	KEY_ID_RIGHT = KeyNameToKeyCode(IniFile.ReadString("Keys", "RIGHT", "RIGHT"));
-
-	KEY_ID_LEFT_A = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT_A", "Z"));
-	KEY_ID_LEFT_B = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT_B", "X"));
-	KEY_ID_RIGHT_A = KeyNameToKeyCode(IniFile.ReadString("Keys", "RIGHT_A", "C"));
-	KEY_ID_RIGHT_B = KeyNameToKeyCode(IniFile.ReadString("Keys", "RIGHT_B", "V"));
-
-	KEY_ID_GESTURE_CUSTOM_5 = KeyNameToKeyCode(IniFile.ReadString("Keys", "GESTURE_CUSTOM_5", "5"));
-	KEY_ID_GESTURE_CUSTOM_6 = KeyNameToKeyCode(IniFile.ReadString("Keys", "GESTURE_CUSTOM_6", "6"));
-	KEY_ID_GESTURE_CUSTOM_7 = KeyNameToKeyCode(IniFile.ReadString("Keys", "GESTURE_CUSTOM_7", "7"));
-	KEY_ID_GESTURE_CUSTOM_8 = KeyNameToKeyCode(IniFile.ReadString("Keys", "GESTURE_CUSTOM_8", "8"));
-	KEY_ID_GESTURE_CUSTOM_9 = KeyNameToKeyCode(IniFile.ReadString("Keys", "GESTURE_CUSTOM_9", "9"));
-	KEY_ID_GESTURE_CUSTOM_0 = KeyNameToKeyCode(IniFile.ReadString("Keys", "GESTURE_CUSTOM_0", "0"));
-
-	std::string modeStr;
-	modeStr = IniFile.ReadString("Modes", "LEFT_TRIGGER_MODE", IniFile.ReadString("Toggles", "LEFT_TRIGGER_MODE", "HOLD")); Btn_LeftTrigger.isToggle = (modeStr == "TOGGLE");
-	modeStr = IniFile.ReadString("Modes", "LEFT_GRIP_MODE", IniFile.ReadString("Toggles", "LEFT_GRIP_MODE", "HOLD")); Btn_LeftGrip.isToggle = (modeStr == "TOGGLE");
-	modeStr = IniFile.ReadString("Modes", "LEFT_MENU_MODE", IniFile.ReadString("Toggles", "LEFT_MENU_MODE", "HOLD")); Btn_LeftMenu.isToggle = (modeStr == "TOGGLE");
-	modeStr = IniFile.ReadString("Modes", "LEFT_SYSTEM_MODE", IniFile.ReadString("Toggles", "LEFT_SYSTEM_MODE", "HOLD")); Btn_LeftSystem.isToggle = (modeStr == "TOGGLE");
-	
-	modeStr = IniFile.ReadString("Modes", "RIGHT_TRIGGER_MODE", IniFile.ReadString("Toggles", "RIGHT_TRIGGER_MODE", "HOLD")); Btn_RightTrigger.isToggle = (modeStr == "TOGGLE");
-	modeStr = IniFile.ReadString("Modes", "RIGHT_GRIP_MODE", IniFile.ReadString("Toggles", "RIGHT_GRIP_MODE", "HOLD")); Btn_RightGrip.isToggle = (modeStr == "TOGGLE");
-	modeStr = IniFile.ReadString("Modes", "RIGHT_MENU_MODE", IniFile.ReadString("Toggles", "RIGHT_MENU_MODE", "HOLD")); Btn_RightMenu.isToggle = (modeStr == "TOGGLE");
-	modeStr = IniFile.ReadString("Modes", "RIGHT_SYSTEM_MODE", IniFile.ReadString("Toggles", "RIGHT_SYSTEM_MODE", "HOLD")); Btn_RightSystem.isToggle = (modeStr == "TOGGLE");
-	
-	modeStr = IniFile.ReadString("Modes", "LEFT_A_MODE", IniFile.ReadString("Toggles", "LEFT_A_MODE", "HOLD")); Btn_LeftA.isToggle = (modeStr == "TOGGLE");
-	modeStr = IniFile.ReadString("Modes", "LEFT_B_MODE", IniFile.ReadString("Toggles", "LEFT_B_MODE", "HOLD")); Btn_LeftB.isToggle = (modeStr == "TOGGLE");
-	modeStr = IniFile.ReadString("Modes", "RIGHT_A_MODE", IniFile.ReadString("Toggles", "RIGHT_A_MODE", "HOLD")); Btn_RightA.isToggle = (modeStr == "TOGGLE");
-	modeStr = IniFile.ReadString("Modes", "RIGHT_B_MODE", IniFile.ReadString("Toggles", "RIGHT_B_MODE", "HOLD")); Btn_RightB.isToggle = (modeStr == "TOGGLE");
-	
-	modeStr = IniFile.ReadString("Modes", "LEFT_TRACKPAD_CLICK_MODE", IniFile.ReadString("Toggles", "LEFT_TRACKPAD_CLICK_MODE", "HOLD")); Btn_LeftTrackpadClick.isToggle = (modeStr == "TOGGLE");
-	modeStr = IniFile.ReadString("Modes", "RIGHT_TRACKPAD_CLICK_MODE", IniFile.ReadString("Toggles", "RIGHT_TRACKPAD_CLICK_MODE", "HOLD")); Btn_RightTrackpadClick.isToggle = (modeStr == "TOGGLE");
-	modeStr = IniFile.ReadString("Modes", "UP_MODE", IniFile.ReadString("Toggles", "UP_MODE", "HOLD")); Btn_Up.isToggle = (modeStr == "TOGGLE");
-	modeStr = IniFile.ReadString("Modes", "DOWN_MODE", IniFile.ReadString("Toggles", "DOWN_MODE", "HOLD")); Btn_Down.isToggle = (modeStr == "TOGGLE");
-	modeStr = IniFile.ReadString("Modes", "LEFT_MODE", IniFile.ReadString("Toggles", "LEFT_MODE", "HOLD")); Btn_Left.isToggle = (modeStr == "TOGGLE");
-	modeStr = IniFile.ReadString("Modes", "RIGHT_MODE", IniFile.ReadString("Toggles", "RIGHT_MODE", "HOLD")); Btn_Right.isToggle = (modeStr == "TOGGLE");
-	modeStr = IniFile.ReadString("Modes", "TURN_LEFT_MODE", IniFile.ReadString("Toggles", "TURN_LEFT_MODE", "HOLD")); Btn_TurnLeft.isToggle = (modeStr == "TOGGLE");
-	modeStr = IniFile.ReadString("Modes", "TURN_RIGHT_MODE", IniFile.ReadString("Toggles", "TURN_RIGHT_MODE", "HOLD")); Btn_TurnRight.isToggle = (modeStr == "TOGGLE");
-	modeStr = IniFile.ReadString("Modes", "TELEPORT_MODE", IniFile.ReadString("Toggles", "TELEPORT_MODE", "HOLD")); Btn_Teleport.isToggle = (modeStr == "TOGGLE");
-	modeStr = IniFile.ReadString("Modes", "CHANGE_WEAPON_MODE", IniFile.ReadString("Toggles", "CHANGE_WEAPON_MODE", "HOLD")); Btn_ChangeWeapon.isToggle = (modeStr == "TOGGLE");
-	modeStr = IniFile.ReadString("Modes", "CROUCH_MODE", IniFile.ReadString("Toggles", "CROUCH_MODE", "TOGGLE")); Btn_Crouch.isToggle = (modeStr == "TOGGLE");
-	
-	mouseSensetiveYaw = IniFile.ReadFloat("Main", "AxisX", 0.05);
-	mouseSensetivePitch = IniFile.ReadFloat("Main", "AxisY", 0.04);
-	ZPosSensetive = IniFile.ReadFloat("Main", "AxisZ", 0.009);
-	HandMoveSensitivity = IniFile.ReadFloat("Main", "HandMoveSensitivity", 0.5f);
-	HandCenterOffsetX = IniFile.ReadFloat("Main", "HandCenterOffsetX", -0.05f);
-	
-	RotationSpeed = IniFile.ReadFloat("Main", "RotationSpeed", 0.05f);
-	FineTuneMultiplier = IniFile.ReadFloat("Main", "FineTuneMultiplier", 0.1f);
-	ScrollPushPullSpeed = IniFile.ReadFloat("Main", "ScrollPushPullSpeed", 0.0005f);
-	OculusHeight = IniFile.ReadFloat("Main", "OculusHeight", 0.05f);
-	OculusSeparation = IniFile.ReadFloat("Main", "OculusSeparation", 0.08f);
-	
-	AutoSwingHoldMode = IniFile.ReadBoolean("FPS_Mode", "AutoSwingHoldMode",
-	                     IniFile.ReadBoolean("Main", "AutoSwingHoldMode", false));
-
-	FPS_HandCenterOffsetX = IniFile.ReadFloat("FPS_Mode", "FPS_HandCenterOffsetX", 0.0f);
-	FPS_HandCenterOffsetZ = IniFile.ReadFloat("FPS_Mode", "FPS_HandCenterOffsetZ", 0.0f);
-	FPS_GunOffsetX = IniFile.ReadFloat("FPS_Mode", "GunOffsetX", 0.0f);
-	FPS_GunOffsetY = IniFile.ReadFloat("FPS_Mode", "GunOffsetY", -0.1f);
-	FPS_GunOffsetZ = IniFile.ReadFloat("FPS_Mode", "GunOffsetZ", 0.3f);
-	FPS_LeftOffsetX = IniFile.ReadFloat("FPS_Mode", "LeftOffsetX", -0.15f);
-	FPS_LeftOffsetY = IniFile.ReadFloat("FPS_Mode", "LeftOffsetY", -0.15f);
-	FPS_LeftOffsetZ = IniFile.ReadFloat("FPS_Mode", "LeftOffsetZ", 0.15f);
-	
-	FPS_GunZeroYaw = IniFile.ReadFloat("FPS_Mode", "GunZeroYaw", 0.0f);
-	FPS_GunZeroPitch = IniFile.ReadFloat("FPS_Mode", "GunZeroPitch", 0.0f);
-	FPS_GunZeroRoll = IniFile.ReadFloat("FPS_Mode", "GunZeroRoll", 0.0f);
-	FPS_LeftZeroYaw = IniFile.ReadFloat("FPS_Mode", "LeftZeroYaw", 0.0f);
-	FPS_LeftZeroPitch = IniFile.ReadFloat("FPS_Mode", "LeftZeroPitch", 0.0f);
-	FPS_LeftZeroRoll = IniFile.ReadFloat("FPS_Mode", "LeftZeroRoll", 0.0f);
-
-	VRMode = IniFile.ReadBoolean("Main", "VRMode", false);
-	VRAimingAngleOffset = IniFile.ReadFloat("Main", "VRAimingAngleOffset", 0);
-	m_HalfWidth = GetSystemMetrics(SM_CXSCREEN) / 2;
-	m_HalfHeight = GetSystemMetrics(SM_CYSCREEN) / 2;
-	HMDConnected = IniFile.ReadBoolean("Main", "HMD", true);
-
-	std::string swallowStr = IniFile.ReadString("SwallowKeys", "Keys", "");
-	std::stringstream ss(swallowStr);
-	std::string token;
-	while (std::getline(ss, token, ',')) {
-		token.erase(std::remove_if(token.begin(), token.end(), ::isspace), token.end());
-		if (!token.empty()) {
-			int code = KeyNameToKeyCode(token);
-			if (code != 0) g_DriverKeys.push_back(code);
-		}
-	}
+	LoadConfig();
 
 	g_HookThread = std::thread([]() {
 		g_HookThreadId = GetCurrentThreadId();
@@ -1488,32 +1588,12 @@ void CServerDriver_Sample::RunFrame()
 	deltaTime = duration_cast<milliseconds>(system_clock::now().time_since_epoch()) - lastMillis;
 	lastMillis = duration_cast<milliseconds>(system_clock::now().time_since_epoch());
 	
-	// --- INI HOT-RELOADER ---
 	static FILETIME lastIniMod = GetFileModTime(g_IniPathStr);
 	FILETIME currentIniMod = GetFileModTime(g_IniPathStr);
 	
 	if (CompareFileTime(&lastIniMod, &currentIniMod) != 0) {
 		lastIniMod = currentIniMod;
-		CIniReader IniFile((char*)g_IniPathStr.c_str());
-		
-		FPS_HandCenterOffsetX = IniFile.ReadFloat("FPS_Mode", "FPS_HandCenterOffsetX", 0.0f);
-		FPS_HandCenterOffsetZ = IniFile.ReadFloat("FPS_Mode", "FPS_HandCenterOffsetZ", 0.0f);
-		FPS_GunOffsetX = IniFile.ReadFloat("FPS_Mode", "GunOffsetX", 0.0f);
-		FPS_GunOffsetY = IniFile.ReadFloat("FPS_Mode", "GunOffsetY", -0.1f);
-		FPS_GunOffsetZ = IniFile.ReadFloat("FPS_Mode", "GunOffsetZ", 0.3f);
-		FPS_LeftOffsetX = IniFile.ReadFloat("FPS_Mode", "LeftOffsetX", -0.15f);
-		FPS_LeftOffsetY = IniFile.ReadFloat("FPS_Mode", "LeftOffsetY", -0.15f);
-		FPS_LeftOffsetZ = IniFile.ReadFloat("FPS_Mode", "LeftOffsetZ", 0.15f);
-		
-		FPS_GunZeroYaw = IniFile.ReadFloat("FPS_Mode", "GunZeroYaw", 0.0f);
-		FPS_GunZeroPitch = IniFile.ReadFloat("FPS_Mode", "GunZeroPitch", 0.0f);
-		FPS_GunZeroRoll = IniFile.ReadFloat("FPS_Mode", "GunZeroRoll", 0.0f);
-		FPS_LeftZeroYaw = IniFile.ReadFloat("FPS_Mode", "LeftZeroYaw", 0.0f);
-		FPS_LeftZeroPitch = IniFile.ReadFloat("FPS_Mode", "LeftZeroPitch", 0.0f);
-		FPS_LeftZeroRoll = IniFile.ReadFloat("FPS_Mode", "LeftZeroRoll", 0.0f);
-
-		AutoSwingHoldMode = IniFile.ReadBoolean("FPS_Mode", "AutoSwingHoldMode",
-		                     IniFile.ReadBoolean("Main", "AutoSwingHoldMode", false));
+		LoadConfig(); 
 	}
 
 	SteamVRHeadsetWindow = FindWindow(NULL, "Headset Window");
@@ -1592,7 +1672,6 @@ void CServerDriver_Sample::RunFrame()
 		}
 		PrevPumpKey = pumpKey;
 
-		// --- FREELOOK LOGIC ---
 		float rdt = max((int)deltaTime.count(), 1) / 1000.0f;
 		bool freelookHeld = IsKeyDown(KEY_ID_FREELOOK) && !LeftHandIsRotating && !RightHandIsRotating;
 
@@ -1608,7 +1687,6 @@ void CServerDriver_Sample::RunFrame()
 		} 
 		else {
 			if (FreelookYawOffset != 0.0f || FreelookPitchOffset != 0.0f) {
-				// Decay the freelook offset directly so the HMD camera glides back to the body/hands
 				FreelookYawOffset -= FreelookYawOffset * 15.0f * rdt;
 				FreelookPitchOffset -= FreelookPitchOffset * 15.0f * rdt;
 				
