@@ -1,4 +1,4 @@
-# FlatVR Universal Driver (Vive + Oculus)
+# FlatscreenVR Universal Driver (Vive + Oculus)
 
 In a nutshell, this is a heavily modified fork of [R57Zone's No-VR driver](https://github.com/r57zone/Half-Life-Alyx-novr), more leaned on making you able to play **H3VR without a VR Headset!**
 
@@ -64,7 +64,7 @@ The goal was to make it as similar to the **Flatplayer** mod for Bonelab, while 
 
 ## 🚧 Roadmap & Call for Ideas!
 
-I have a lot more updates planned for FlatVR (including a literal arm swinger locomotion and toggleable buttons), but honestly, I'm somewhat figuring out how C++ works by reading the code, since I am NOT learning all of it. 
+I have a lot more updates planned for FlatscreenVR (including a literal arm swinger locomotion and toggleable buttons), but honestly, I'm somewhat figuring out how C++ works by reading the code, since I am NOT learning all of it. 
 
 I know that I'm practically talking to an amount of people that's countable on my hands, but if you have any cool ideas you think would make this driver better (or if you find a bug), **please open an Issue** or let me know! I'd love to hear what the early adopters want to see next. 
 
