@@ -1,5 +1,3 @@
-<meta name="google-site-verification" content="pUz-tROVwL-bKn2jZWmQxTgerCPVS_x_Z6Q9l6P7tvQ" />
-
 # FlatscreenVR Universal Driver (Vive + Oculus)
 
 In a nutshell, this is a heavily modified fork of [R57Zone's No-VR driver](https://github.com/r57zone/Half-Life-Alyx-novr), more leaned on making you able to play **H3VR without a VR Headset!**
@@ -81,3 +79,5 @@ I know that I'm practically talking to an amount of people that's countable on m
 5. *(Optional)* Check inside `Resources\Custom_Gestures` for a `README.txt` to learn how to script your own hand animations using the Custom Gesture System.
 
 *I know this is bare bones, but it's my first time on GitHub and I still have a feeling it is. Enjoy my modded driver!*
+
+...So, I just remembered that I have other unused Readmes like the RU one. I'm thinking about adding translation since my head is empty and has no ideas for now 👀
