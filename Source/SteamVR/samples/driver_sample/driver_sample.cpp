@@ -1,5 +1,5 @@
-//============ Copyright (c) Valve Corporation, All rights reserved. ============
-//===================== FlatVR Universal Driver =======================
+//============ Copyright (c) Valve Corporation. All rights reserved. ============
+//========================== FlatVR Universal Driver ============================
 
 #include <openvr_driver.h>
 #include <vector>
@@ -14,7 +14,6 @@
 
 #include <atomic>
 #include <windows.h>
-#include <atlbase.h>
 #include "IniReader\IniReader.h"
 
 using namespace vr;
@@ -42,15 +41,74 @@ inline vr::HmdQuaternion_t EulerAngleToQuaternion(double Yaw, double Pitch, doub
 	vr::HmdQuaternion_t q;
 	double cy = cos(Yaw * 0.5); double sy = sin(Yaw * 0.5); double cp = cos(Pitch * 0.5);
 	double sp = sin(Pitch * 0.5); double cr = cos(Roll * 0.5); double sr = sin(Roll * 0.5);
-	
+
 	q.w = cy * cp * cr + sy * sp * sr;
 	q.x = cy * sp * cr + sy * cp * sr;
 	q.y = sy * cp * cr - cy * sp * sr;
 	q.z = cy * cp * sr - sy * sp * cr;
-	
+
 	return q;
 }
 
+// Rotation matrix (column vectors: right, up, back) -> quaternion. Shepperd's method.
+inline vr::HmdQuaternion_t MatrixToQuaternion(const double m[3][3])
+{
+	vr::HmdQuaternion_t q;
+	double t = m[0][0] + m[1][1] + m[2][2];
+	if (t > 0.0) {
+		double s = sqrt(t + 1.0) * 2.0;
+		q.w = 0.25 * s; q.x = (m[2][1] - m[1][2]) / s; q.y = (m[0][2] - m[2][0]) / s; q.z = (m[1][0] - m[0][1]) / s;
+	} else if (m[0][0] > m[1][1] && m[0][0] > m[2][2]) {
+		double s = sqrt(1.0 + m[0][0] - m[1][1] - m[2][2]) * 2.0;
+		q.w = (m[2][1] - m[1][2]) / s; q.x = 0.25 * s; q.y = (m[0][1] + m[1][0]) / s; q.z = (m[0][2] + m[2][0]) / s;
+	} else if (m[1][1] > m[2][2]) {
+		double s = sqrt(1.0 + m[1][1] - m[0][0] - m[2][2]) * 2.0;
+		q.w = (m[0][2] - m[2][0]) / s; q.x = (m[0][1] + m[1][0]) / s; q.y = 0.25 * s; q.z = (m[1][2] + m[2][1]) / s;
+	} else {
+		double s = sqrt(1.0 + m[2][2] - m[0][0] - m[1][1]) * 2.0;
+		q.w = (m[1][0] - m[0][1]) / s; q.x = (m[0][2] + m[2][0]) / s; q.y = (m[1][2] + m[2][1]) / s; q.z = 0.25 * s;
+	}
+	return q;
+}
+
+// --- FORWARD DECLARATIONS & GLOBAL STATES ---
+void LoadConfig();
+std::string g_ActiveProfileName = "Default";
+std::string g_DriverFolderStr = "";
+FILETIME lastIniMod = { 0, 0 };
+
+// --- PATH RESOLUTION ---
+std::string GetDriverFolder() {
+    char path[MAX_PATH] = { 0 };
+    HMODULE hMod = NULL;
+    if (!GetModuleHandleExA(
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        (LPCSTR)reinterpret_cast<void*>(GetDriverFolder), &hMod))
+        return "";
+    if (!GetModuleFileNameA(hMod, path, MAX_PATH))
+        return "";
+
+    std::string dir(path);
+    size_t pos = dir.find_last_of("\\/");
+    if (pos == std::string::npos) return "";
+    dir = dir.substr(0, pos);
+
+    if (GetFileAttributesA((dir + "/FlatVR.ini").c_str()) != INVALID_FILE_ATTRIBUTES)
+        return dir;
+
+    std::string parent = dir;
+    for (int i = 0; i < 2; ++i) {
+        size_t p = parent.find_last_of("\\/");
+        if (p == std::string::npos) break;
+        parent = parent.substr(0, p);
+    }
+    if (GetFileAttributesA((parent + "/FlatVR.ini").c_str()) != INVALID_FILE_ATTRIBUTES)
+        return parent;
+
+    return parent;
+}
+
+// --- KEY MAPPING ---
 int KeyNameToKeyCode(std::string KeyName) {
 	std::transform(KeyName.begin(), KeyName.end(), KeyName.begin(), ::toupper);
 	if (KeyName == "NONE") return 0;
@@ -66,6 +124,12 @@ int KeyNameToKeyCode(std::string KeyName) {
 	else if (KeyName == "F7") return VK_F7; else if (KeyName == "F8") return VK_F8;
 	else if (KeyName == "F9") return VK_F9; else if (KeyName == "F10") return VK_F10;
 	else if (KeyName == "F11") return VK_F11; else if (KeyName == "F12") return VK_F12;
+	else if (KeyName == "F13") return VK_F13; else if (KeyName == "F14") return VK_F14;
+	else if (KeyName == "F15") return VK_F15; else if (KeyName == "F16") return VK_F16;
+	else if (KeyName == "F17") return VK_F17; else if (KeyName == "F18") return VK_F18;
+	else if (KeyName == "F19") return VK_F19; else if (KeyName == "F20") return VK_F20;
+	else if (KeyName == "F21") return VK_F21; else if (KeyName == "F22") return VK_F22;
+	else if (KeyName == "F23") return VK_F23; else if (KeyName == "F24") return VK_F24;
 	else if (KeyName == "~") return 192;
 	else if (KeyName == "1") return '1'; else if (KeyName == "2") return '2';
 	else if (KeyName == "3") return '3'; else if (KeyName == "4") return '4';
@@ -112,9 +176,12 @@ int KeyNameToKeyCode(std::string KeyName) {
 	else if (KeyName == "NUMPAD-DIVIDE") return VK_DIVIDE; else if (KeyName == "NUMPAD-MULTIPLY") return VK_MULTIPLY;
 	else if (KeyName == "NUMPAD-MINUS") return VK_SUBTRACT; else if (KeyName == "NUMPAD-PLUS") return VK_ADD;
 	else if (KeyName == "NUMPAD-DEL") return VK_DECIMAL;
+	else if (KeyName == "," || KeyName == "COMMA") return VK_OEM_COMMA;
+	else if (KeyName == "." || KeyName == "PERIOD") return VK_OEM_PERIOD;
 	else return 0;
 }
 
+// --- GLOBALS & STRUCTS ---
 static const char* const k_pch_Sample_Section = "FlatVR";
 static const char* const k_pch_Sample_SerialNumber_String = "serialNumber";
 static const char* const k_pch_Sample_ModelNumber_String = "modelNumber";
@@ -133,11 +200,13 @@ static const char* const k_pch_Sample_Stereo_Bool = "Stereo";
 static const char* const k_pch_Sample_DebugMode_Bool = "DebugMode";
 
 double FirstCtrlLastPos[3] = { 0, 0, 0 }, SecondCtrlLastPos[3] = { 0, 0, 0 };
+double FirstCtrlVel[3] = { 0, 0, 0 }, SecondCtrlVel[3] = { 0, 0, 0 };
 double LastHmdPos[3] = { 0, 0, 0 };
 double LastHmdYaw = 0, LastHmdPitch = 0;
 double HmdOmegaX = 0, HmdOmegaY = 0;
 
 milliseconds deltaTime;
+double g_DtSeconds = 1.0 / 90.0;
 
 typedef struct _HMDData { double X, Y, Z, Yaw, Pitch, Roll; } THMD, * PHMD;
 
@@ -148,7 +217,41 @@ typedef struct _Controller
 	float	Trigger, AxisX, AxisY;
 	float	GripValue;
 	bool	ButtonA, ButtonB;
+	bool	UseQuat;          // FPS hands: send this quaternion directly (no Euler round-trip = no gimbal lock)
+	double	QW, QX, QY, QZ;
 } TController, * PController;
+
+double g_PrevGunQ[4] = { 1, 0, 0, 0 }, g_PrevSupQ[4] = { 1, 0, 0, 0 };
+double FPS_YawSign = -1.0, FPS_PitchSign = -1.0; // InvertPitch: true = -1. InvertYaw is swapped: false = -1, true = +1
+
+// Builds a hand orientation straight from the camera basis (no yaw/pitch extraction -> no gimbal lock).
+// Applies yaw about camera up, then pitch about the resulting right axis, then roll about the hand's own forward.
+inline void BuildFpsHandQuat(const double f[3], const double r[3], const double u[3],
+                             double yawDeg, double pitchDeg, double rollDeg, TController* out, double prevQ[4])
+{
+	double gy = yawDeg * (3.14159265358979323846 / 180.0);
+	double gp = pitchDeg * (3.14159265358979323846 / 180.0);
+	double gr = rollDeg * (3.14159265358979323846 / 180.0);
+	double cy = cos(gy), sy = sin(gy), cp = cos(gp), sp = sin(gp), cr = cos(gr), sr = sin(gr);
+
+	double f1[3], r1[3], f2[3], u2[3], nr[3], nu[3];
+	for (int i = 0; i < 3; ++i) {
+		f1[i] = f[i] * cy + r[i] * sy;
+		r1[i] = r[i] * cy - f[i] * sy;
+		f2[i] = f1[i] * cp + u[i] * sp;
+		u2[i] = u[i] * cp - f1[i] * sp;
+		nr[i] = r1[i] * cr + u2[i] * sr;
+		nu[i] = -r1[i] * sr + u2[i] * cr;
+	}
+	double m[3][3];
+	for (int i = 0; i < 3; ++i) { m[i][0] = nr[i]; m[i][1] = nu[i]; m[i][2] = -f2[i]; }
+	vr::HmdQuaternion_t q = MatrixToQuaternion(m);
+	// q and -q are the same rotation; keep the same sign as last frame so the pose never flips/spins at the pole.
+	if (q.w * prevQ[0] + q.x * prevQ[1] + q.y * prevQ[2] + q.z * prevQ[3] < 0.0) { q.w = -q.w; q.x = -q.x; q.y = -q.y; q.z = -q.z; }
+	prevQ[0] = q.w; prevQ[1] = q.x; prevQ[2] = q.y; prevQ[3] = q.z;
+	out->UseQuat = true; out->QW = q.w; out->QX = q.x; out->QY = q.y; out->QZ = q.z;
+}
+
 
 #define GRIP_BTN	0x0001
 #define THUMB_BTN	0x0002
@@ -175,11 +278,12 @@ int KEY_ID_MOTION_MODE_MOVE_UP, KEY_ID_MOTION_MODE_MOVE_DOWN;
 int KEY_ID_TURN_LEFT, KEY_ID_TURN_RIGHT;
 int KEY_ID_UP, KEY_ID_DOWN, KEY_ID_LEFT, KEY_ID_RIGHT;
 int KEY_ID_FPS_MODE_TOGGLE;
+int KEY_ID_SAVE_POSE_LEFT = 0, KEY_ID_SAVE_POSE_RIGHT = 0;
 
 bool FPSModeActive = false;
 bool PrevFPSModeKey = false;
 
-bool LeftTrackpadPressMode  = true;   // true = click fires, false = touch only
+bool LeftTrackpadPressMode  = true;
 bool RightTrackpadPressMode = true;
 bool PrevLeftTrackpadToggle  = false;
 bool PrevRightTrackpadToggle = false;
@@ -188,10 +292,9 @@ int  KEY_ID_RIGHT_TRACKPAD_TOGGLE = 0;
 float SmoothTriggerL = 0.0f;
 float SmoothTriggerR = 0.0f;
 
-// Smooth Reset State
 bool IsSmoothResetting = false;
 double SmoothResetTimer = 0.0;
-double SmoothResetDuration = 0.4; // 0.4 seconds to return
+double SmoothResetDuration = 0.4;
 double StartResetX_L = 0, StartResetY_L = 0, StartResetZ_L = 0;
 double StartResetX_R = 0, StartResetY_R = 0, StartResetZ_R = 0;
 double StartResetRotL_X = 0, StartResetRotL_Y = 0;
@@ -200,11 +303,10 @@ double StartResetRotR_X = 0, StartResetRotR_Y = 0;
 bool PrevSmoothResetKey = false;
 int KEY_ID_SMOOTH_HAND_RESET = 0;
 
-// Smoothed Positions (Initialize to 0)
 double SmoothHMD_X = 0, SmoothHMD_Y = 0, SmoothHMD_Z = 0;
 double SmoothL_X = 0, SmoothL_Y = 0, SmoothL_Z = 0;
 double SmoothR_X = 0, SmoothR_Y = 0, SmoothR_Z = 0;
-float PositionSmoothness = 0.15f; // 0.01 = super laggy, 1.0 = raw (no smoothing)
+float PositionSmoothness = 0.15f;
 bool SmoothHMD_Init = false;
 bool SmoothL_Init = false;
 bool SmoothR_Init = false;
@@ -219,12 +321,16 @@ bool PrevAutoSwingKey = false;
 int KEY_ID_AUTO_SWING_TOGGLE;
 
 HHOOK g_hKeyboardHook = NULL;
-std::vector<int> g_DriverKeys;
+std::atomic<bool> g_IsDriverKey[256] = {};
 std::atomic<bool> g_SwallowedKeyState[256] = { false };
+std::map<int, int> g_KeyRemapper;
+std::atomic<bool> g_RemappedKeyActive[256] = { false };
 
 bool IsKeyDown(int vkCode) {
-    if (std::find(g_DriverKeys.begin(), g_DriverKeys.end(), vkCode) != g_DriverKeys.end()) {
-        return g_SwallowedKeyState[vkCode];
+    if (vkCode > 0 && vkCode < 256) {
+        if (g_IsDriverKey[vkCode].load(std::memory_order_relaxed)) {
+            return g_SwallowedKeyState[vkCode].load(std::memory_order_relaxed);
+        }
     }
     return (GetAsyncKeyState(vkCode) & 0x8000) != 0;
 }
@@ -232,6 +338,20 @@ bool IsKeyDown(int vkCode) {
 int KEY_ID_PUMP_ACTION;
 double PumpTimer = 0.0;
 bool PrevPumpKey = false;
+double PumpDuration = 0.35;
+double PumpDistance = 0.15;
+
+// --- SNIPER / BIPOD MODE GLOBALS ---
+bool SniperModeActive = false;
+bool PrevSniperModeKey = false;
+int KEY_ID_SNIPER_MODE = 0;
+bool SniperToggleMode = false;
+bool SniperJustStarted = false;
+bool SniperExiting = false;
+bool SniperJustEnded = false;
+double SniperAnchorX = 0, SniperAnchorY = 0, SniperAnchorZ = 0;
+double SniperHmdOffsetX = 0, SniperHmdOffsetY = 0, SniperHmdOffsetZ = 0;
+double SniperExitTimer = 0.0;
 
 bool LeftHandLocked = false;
 bool RightHandLocked = false;
@@ -241,11 +361,21 @@ int KEY_ID_LEFT_HAND_LOCK, KEY_ID_RIGHT_HAND_LOCK;
 double LockedLeftPos[3] = { 0, 0, 0 };
 double LockedRightPos[3] = { 0, 0, 0 };
 double LockedLeftYaw = 0, LockedLeftPitch = 0, LockedLeftRoll = 0;
+bool LockedLeftUseQuat = false; double LockedLeftQ[4] = { 1, 0, 0, 0 };
+bool LockedRightUseQuat = false; double LockedRightQ[4] = { 1, 0, 0, 0 };
 double LockedRightYaw = 0, LockedRightPitch = 0, LockedRightRoll = 0;
+
+int KEY_ID_TRACKPAD_DISTANCE = 0;
+float TrackpadHalf = 0.5f;
+float TrackpadFull = 1.0f;
+float CurrentAxisX_L = 0.0f;
+float CurrentAxisY_L = 0.0f;
+float CurrentAxisX_R = 0.0f;
+float CurrentAxisY_R = 0.0f;
 
 double HMDPosX = 0, HMDPosY = 0;
 int KEY_ID_HMD_FORWARD, KEY_ID_HMD_BACK, KEY_ID_HMD_LEFT, KEY_ID_HMD_RIGHT, KEY_ID_HMD_MOVE_RESET;
-std::string g_IniPathStr = ""; 
+std::string g_IniPathStr = "";
 
 float FPS_HandCenterOffsetX = 0.0f;
 float FPS_HandCenterOffsetZ = 0.0f;
@@ -263,12 +393,34 @@ float FPS_LeftZeroYaw = 0.0f;
 float FPS_LeftZeroPitch = 0.0f;
 float FPS_LeftZeroRoll = 0.0f;
 
+// --- GESTURE STRUCTS & ENGINE ---
 struct GestureStep {
     std::string command;
     std::string target;
     std::string axis;
     double value = 0.0;
     double duration = 0.0;
+    double delay = 0.0;
+    bool isParallel = false;
+    bool isHmdRelative = false;
+	bool ignoreRot = false;
+    double poseL[6] = {0,0,0,0,0,0};
+    double poseR[6] = {0,0,0,0,0,0};
+    bool hasPoseL = false, hasPoseR = false;
+};
+
+struct ActiveStep {
+    int index;
+    double timer;
+    bool initialized;
+    double initOffsetL[3], initOffsetR[3], initRotL[3], initRotR[3];
+
+    ActiveStep(int i, double t) : index(i), timer(t), initialized(false) {
+        memset(initOffsetL, 0, sizeof(initOffsetL));
+        memset(initOffsetR, 0, sizeof(initOffsetR));
+        memset(initRotL, 0, sizeof(initRotL));
+        memset(initRotR, 0, sizeof(initRotR));
+    }
 };
 
 struct CachedGesture {
@@ -276,6 +428,24 @@ struct CachedGesture {
     FILETIME lastModified;
 };
 std::map<std::string, CachedGesture> g_GestureCache;
+std::vector<GestureStep> ActiveSequence;
+std::vector<ActiveStep> RunningSteps;
+int NextStepIndex = 0;
+int g_ActiveGestureKey = 0;
+int PrevPressedGesture = 0;
+bool g_GestureLoop = false;
+
+double ShakeTimeL = 0.0, ShakeTimeR = 0.0;
+double ShakeTimerL = 0.0, ShakeTimerR = 0.0;
+double ShakeIntensityL[3] = {0,0,0}, ShakeIntensityR[3] = {0,0,0};
+bool ManualShakeL_H = false, ManualShakeR_H = false;
+bool ManualShakeL_V = false, ManualShakeR_V = false;
+int KEY_ID_SHAKE_LEFT_H = 0, KEY_ID_SHAKE_RIGHT_H = 0;
+int KEY_ID_SHAKE_LEFT_V = 0, KEY_ID_SHAKE_RIGHT_V = 0;
+
+int KEY_ID_LEAN_RIGHT = 0, KEY_ID_LEAN_LEFT = 0;
+double LeanOffset = 0.0;
+double g_LeanOffsetX = 0.0, g_LeanOffsetY = 0.0;
 
 FILETIME GetFileModTime(const std::string& path) {
     WIN32_FILE_ATTRIBUTE_DATA fileInfo;
@@ -286,10 +456,6 @@ FILETIME GetFileModTime(const std::string& path) {
     return empty;
 }
 
-std::vector<GestureStep> ActiveSequence; 
-int CurrentStepIndex = -1;               
-double StepTimer = 0.0;
-
 double SeqOffsetL[3] = { 0, 0, 0 }, SeqOffsetR[3] = { 0, 0, 0 };
 double SeqRotL[3] = { 0, 0, 0 }, SeqRotR[3] = { 0, 0, 0 };
 
@@ -298,62 +464,165 @@ double StartSeqRotL[3] = { 0, 0, 0 }, StartSeqRotR[3] = { 0, 0, 0 };
 double StepInitialOffsetL[3] = { 0, 0, 0 }, StepInitialOffsetR[3] = { 0, 0, 0 };
 double StepInitialRotL[3] = { 0, 0, 0 }, StepInitialRotR[3] = { 0, 0, 0 };
 
-int SeqGripL = -1, SeqGripR = -1;
-int SeqTrigL = -1, SeqTrigR = -1;
-int SeqMenuL = -1, SeqMenuR = -1;
-int SeqSysL = -1, SeqSysR = -1;
-int SeqTrackpadCL = -1, SeqTrackpadCR = -1;
-int SeqTrackpadUL = -1, SeqTrackpadUR = -1;
-int SeqTrackpadDL = -1, SeqTrackpadDR = -1;
-int SeqTrackpadLL = -1, SeqTrackpadLR = -1;
-int SeqTrackpadRL = -1, SeqTrackpadRR = -1;
-int SeqBtnAL = -1, SeqBtnAR = -1;
-int SeqBtnBL = -1, SeqBtnBR = -1;
+double SeqGripL = -1.0, SeqGripR = -1.0;
+double SeqTrigL = -1.0, SeqTrigR = -1.0;
+double SeqMenuL = -1.0, SeqMenuR = -1.0;
+double SeqSysL = -1.0, SeqSysR = -1.0;
+double SeqTrackpadCL = -1.0, SeqTrackpadCR = -1.0;
+double SeqTrackpadUL = -1.0, SeqTrackpadUR = -1.0;
+double SeqTrackpadDL = -1.0, SeqTrackpadDR = -1.0;
+double SeqTrackpadLL = -1.0, SeqTrackpadLR = -1.0;
+double SeqTrackpadRL = -1.0, SeqTrackpadRR = -1.0;
+double SeqBtnAL = -1.0, SeqBtnAR = -1.0;
+double SeqBtnBL = -1.0, SeqBtnBR = -1.0;
 
 int KEY_ID_GESTURE_CUSTOM_5, KEY_ID_GESTURE_CUSTOM_6, KEY_ID_GESTURE_CUSTOM_7, KEY_ID_GESTURE_CUSTOM_8, KEY_ID_GESTURE_CUSTOM_9, KEY_ID_GESTURE_CUSTOM_0;
+int KEY_ID_GESTURE_MINUS = 0, KEY_ID_GESTURE_EQUALS = 0;
 
 void LoadGestureSequence(const std::string& path) {
-    FILETIME currentTime = GetFileModTime(path);
-    
-    auto it = g_GestureCache.find(path);
-    if (it != g_GestureCache.end()) {
-        if (CompareFileTime(&it->second.lastModified, &currentTime) == 0) {
-            ActiveSequence = it->second.steps;
-            return;
-        }
+    ActiveSequence.clear();
+    g_GestureLoop = false;
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        vr::VRDriverLog()->Log(("FlatVR: Failed to open gesture: " + path + "\n").c_str());
+        return;
     }
 
-    ActiveSequence.clear();
-    std::ifstream file(path);
-    std::string line;
-    
-    if (!file.is_open()) return; 
-    
-    while (std::getline(file, line)) {
-        size_t commentPos = line.find('#');
-        if (commentPos != std::string::npos) line = line.substr(0, commentPos);
-        
-        std::stringstream ss(line);
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    std::string content = buffer.str();
+    file.close();
+
+    size_t hashPos;
+    while ((hashPos = content.find('#')) != std::string::npos) {
+        size_t newlinePos = content.find('\n', hashPos);
+        if (newlinePos == std::string::npos) content.erase(hashPos);
+        else content.erase(hashPos, newlinePos - hashPos);
+    }
+
+    std::stringstream ss(content);
+    std::string token;
+    bool inPar = false;
+    bool mirror = false;
+    double currentDelay = 0.0;
+
+    while (ss >> token) {
+        if (token == "PAR") { inPar = true; continue; }
+        if (token == "END") { inPar = false; continue; }
+        if (token == "MIRROR") { mirror = !mirror; continue; }
+        if (token == "LOOP") { g_GestureLoop = true; continue; }
+
+        if (token == "DELAY") {
+            ss >> currentDelay;
+            continue;
+        }
+
         GestureStep step;
-        ss >> step.command;
-        
-        if (step.command == "WAIT") {
+        step.command = token;
+        step.isParallel = inPar;
+        step.delay = currentDelay;
+        currentDelay = 0.0;
+
+        if (token == "WAIT" || token == "RETURN") {
             ss >> step.duration;
-        } else if (step.command == "RETURN") {
-            ss >> step.duration;
-        } else if (step.command == "MOVE" || step.command == "ROTATE") {
+        }
+        else if (token == "MOVE" || token == "ROTATE" || token == "BUTTON" || token == "SHAKE") {
             ss >> step.target >> step.axis >> step.value >> step.duration;
-        } else if (step.command == "BUTTON") {
-            ss >> step.target >> step.axis >> step.value >> step.duration;
-        } else continue; 
+        }
+        else if (token == "POSE") {
+            std::string filename, relFlag;
+            ss >> step.target >> filename >> step.duration;
+            
+            // Check for REL=HMD flag
+            if (ss >> relFlag && relFlag == "REL=HMD") {
+                step.isHmdRelative = true;
+            }
+			
+            std::string posePath = g_DriverFolderStr + "/Resources/Pose_Config/" + g_ActiveProfileName + "/" + filename + ".pose";
+            if (GetFileAttributesA(posePath.c_str()) == INVALID_FILE_ATTRIBUTES)
+                posePath = g_DriverFolderStr + "/Resources/Pose_Config/Default/" + filename + ".pose";
+
+            std::ifstream pf(posePath);
+            if (pf.is_open()) {
+                std::string pline;
+                while (std::getline(pf, pline)) {
+                    if (pline.empty() || pline[0] == '#') continue;
+                    std::stringstream pss(pline);
+                    std::string hand;
+                    pss >> hand;
+                    double v[6] = {0,0,0,0,0,0};
+
+                    if (hand == "L" || hand == "R") {
+                        pss >> v[0] >> v[1] >> v[2] >> v[3] >> v[4] >> v[5];
+                        
+                        std::string flag;
+                        while (pss >> flag) {
+                            if (flag == "REL=HMD") step.isHmdRelative = true;
+                            if (flag == "ROT=IGNORE") step.ignoreRot = true;
+                        }
+
+                        bool wantL = (step.target == "L" || step.target == "B");
+                        bool wantR = (step.target == "R" || step.target == "B");
+
+                        if (hand == "L") {
+                            if (wantL) {
+                                for(int i=0;i<6;i++) step.poseL[i] = v[i];
+                                step.hasPoseL = true;
+                            } else if (wantR) {
+                                // FAILSAFE: File says L, but gesture wants R. Force it to R.
+                                vr::VRDriverLog()->Log(("FlatVR: WARNING - Pose " + filename + " has 'L' data, but target was 'R'. Forcing to R.\n").c_str());
+                                for(int i=0;i<6;i++) step.poseR[i] = v[i];
+                                step.hasPoseR = true;
+                            }
+                        } else if (hand == "R") {
+                            if (wantR) {
+                                for(int i=0;i<6;i++) step.poseR[i] = v[i];
+                                step.hasPoseR = true;
+                            } else if (wantL) {
+                                // FAILSAFE: File says R, but gesture wants L. Force it to L.
+                                vr::VRDriverLog()->Log(("FlatVR: WARNING - Pose " + filename + " has 'R' data, but target was 'L'. Forcing to L.\n").c_str());
+                                for(int i=0;i<6;i++) step.poseL[i] = v[i];
+                                step.hasPoseL = true;
+                            }
+                        }
+                    }
+				}
+                pf.close();
+            } else {
+                vr::VRDriverLog()->Log(("FlatVR: Pose file not found: " + posePath + "\n").c_str());
+            }
+        }
+        else {
+            continue;
+        }
+
+        if (mirror) {
+            if (step.target == "L") step.target = "R";
+            else if (step.target == "R") step.target = "L";
+
+            if (step.axis == "X" || step.axis == "YAW") {
+                step.value = -step.value;
+            }
+
+            if (step.command == "POSE") {
+                bool tempHas = step.hasPoseL;
+                step.hasPoseL = step.hasPoseR;
+                step.hasPoseR = tempHas;
+                for (int i=0; i<6; i++) {
+                    double temp = step.poseL[i];
+                    step.poseL[i] = step.poseR[i];
+                    step.poseR[i] = temp;
+                }
+                if (step.hasPoseL) { step.poseL[0] = -step.poseL[0]; step.poseL[3] = -step.poseL[3]; }
+                if (step.hasPoseR) { step.poseR[0] = -step.poseR[0]; step.poseR[3] = -step.poseR[3]; }
+            }
+        }
 
         if (step.duration > 0) {
             ActiveSequence.push_back(step);
         }
     }
-    file.close();
-
-    g_GestureCache[path] = { ActiveSequence, currentTime };
+    vr::VRDriverLog()->Log(("FlatVR: Loaded " + std::to_string(ActiveSequence.size()) + " steps from " + path + "\n").c_str());
 }
 
 struct ButtonState {
@@ -368,12 +637,13 @@ ButtonState Btn_LeftA, Btn_LeftB, Btn_RightA, Btn_RightB;
 ButtonState Btn_LeftTrackpadClick, Btn_RightTrackpadClick;
 ButtonState Btn_Up, Btn_Down, Btn_Left, Btn_Right;
 ButtonState Btn_TurnLeft, Btn_TurnRight, Btn_Teleport, Btn_ChangeWeapon;
-ButtonState Btn_Crouch, Btn_Prone; 
+ButtonState Btn_Crouch, Btn_Prone;
+ButtonState Btn_TrackpadDistance;
 
 bool CheckButton(int keyCode, ButtonState& state) {
     if (keyCode == 0) return false;
     bool isPressed = IsKeyDown(keyCode);
-    
+
     if (state.isToggle) {
         if (isPressed && !state.prev) {
             state.state = !state.state;
@@ -422,8 +692,6 @@ double CtrlPosOffset[3] = { 0, 0, 0 };
 double SecondCtrlYPROffset[3] = { 0, 0, 0 };
 double SecondCtrlLastYPR[3] = { 0, 0, 0 };
 
-std::string g_SteamPathStr = ""; 
-
 float LeftHandYaw = 0, LeftHandPitch = 0, LeftAngleDist = 0, LeftRadDist = 0, LeftYOffset = 0;
 float RightAngleDist = 0;
 float RightHandYaw = 0, RightHandPitch = 0, RightRadDist = 0;
@@ -444,6 +712,117 @@ std::atomic<int> g_MouseWheelDelta(0);
 DWORD g_HookThreadId = 0;
 std::thread g_HookThread;
 
+bool NeckModelEnabled = true;
+bool PrevNeckToggleKey = false;
+bool PrevProfileCycleKey = false;
+int KEY_ID_PROFILE_CYCLE = 0;
+int KEY_ID_NECK_MODEL_TOGGLE = 0;
+
+bool PrevSavePoseL = false, PrevSavePoseR = false;
+
+std::string GetAppIdentifierFromPid(DWORD pid) {
+    if (pid == 0) return "Default";
+    char name[MAX_PATH] = {0};
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (hProcess) {
+        DWORD size = MAX_PATH;
+        if (QueryFullProcessImageNameA(hProcess, 0, name, &size)) {
+            std::string path(name);
+            size_t pos = path.find_last_of("\\/");
+            if (pos != std::string::npos) path = path.substr(pos + 1);
+            size_t ext = path.find_last_of(".");
+            if (ext != std::string::npos) path = path.substr(0, ext);
+            CloseHandle(hProcess);
+
+            if (path == "vrserver" || path == "vrmonitor" || path == "steam" || path == "steamwebhelper") {
+                return "Default";
+            }
+            return path;
+        }
+        CloseHandle(hProcess);
+    }
+    return "Default";
+}
+
+void ResetRuntimeState() {
+    FPSModeActive = false;
+    LeftHandLocked = false;
+    RightHandLocked = false;
+    LeftHandIsRotating = false;
+    RightHandIsRotating = false;
+    IsSmoothResetting = false;
+
+    RunningSteps.clear();
+    NextStepIndex = 0;
+    ActiveSequence.clear();
+    SeqOffsetL[0] = SeqOffsetL[1] = SeqOffsetL[2] = 0;
+    SeqOffsetR[0] = SeqOffsetR[1] = SeqOffsetR[2] = 0;
+    SeqRotL[0] = SeqRotL[1] = SeqRotL[2] = 0;
+    SeqRotR[0] = SeqRotR[1] = SeqRotR[2] = 0;
+
+    LeftXOffset = LeftRotateYOffset = LeftZOffset = 0.0;
+    RightXOffset = RightYOffset = RightZOffset = 0.0;
+    LeftZOffset_Target = RightZOffset_Target = 0.0;
+    LeftHandRotOffset[0] = LeftHandRotOffset[1] = LeftHandRotOffset[2] = 0.0;
+    RightHandRotOffset[0] = RightHandRotOffset[1] = RightHandRotOffset[2] = 0.0;
+
+    SeqGripL = SeqGripR = SeqTrigL = SeqTrigR = -1.0;
+    SeqMenuL = SeqMenuR = SeqSysL = SeqSysR = -1.0;
+    SeqTrackpadCL = SeqTrackpadCR = SeqTrackpadUL = SeqTrackpadUR = -1.0;
+    SeqTrackpadDL = SeqTrackpadDR = SeqTrackpadLL = SeqTrackpadLR = -1.0;
+    SeqTrackpadRL = SeqTrackpadRR = SeqBtnAL = SeqBtnAR = SeqBtnBL = SeqBtnBR = -1.0;
+}
+
+void LoadProfile(const std::string& profileName) {
+    if (g_ActiveProfileName == profileName && !g_IniPathStr.empty()) return;
+    g_ActiveProfileName = profileName;
+
+    std::string profilePath = g_DriverFolderStr + "/Profiles/" + profileName + ".ini";
+
+    if (GetFileAttributesA(profilePath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        g_IniPathStr = profilePath;
+    } else {
+        g_IniPathStr = g_DriverFolderStr + "/FlatVR.ini";
+    }
+
+    ResetRuntimeState();
+    LoadConfig();
+    lastIniMod = GetFileModTime(g_IniPathStr);
+
+    vr::VRDriverLog()->Log(("FlatVR: Loaded profile: " + g_ActiveProfileName + " -> " + g_IniPathStr + "\n").c_str());
+}
+
+void CycleProfile() {
+    WIN32_FIND_DATAA fd;
+    std::string searchPath = g_DriverFolderStr + "/Profiles/*.ini";
+    HANDLE hFind = FindFirstFileA(searchPath.c_str(), &fd);
+    std::vector<std::string> profiles;
+    profiles.push_back("Default");
+
+    if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+            std::string name = fd.cFileName;
+            size_t ext = name.find_last_of('.');
+            if (ext != std::string::npos) name = name.substr(0, ext);
+            if (name != "Default" && name != "." && name != "..") {
+                profiles.push_back(name);
+            }
+        } while (FindNextFileA(hFind, &fd));
+        FindClose(hFind);
+    }
+
+    std::sort(profiles.begin(), profiles.end());
+
+    auto it = std::find(profiles.begin(), profiles.end(), g_ActiveProfileName);
+    if (it != profiles.end()) {
+        it++;
+        if (it == profiles.end()) it = profiles.begin();
+        LoadProfile(*it);
+    } else {
+        LoadProfile(profiles[0]);
+    }
+}
+
 LRESULT CALLBACK MouseHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
 	if (nCode >= 0 && wParam == WM_MOUSEWHEEL) {
 		MSLLHOOKSTRUCT* pMouseStruct = (MSLLHOOKSTRUCT*)lParam;
@@ -458,14 +837,38 @@ LRESULT CALLBACK KeyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
         KBDLLHOOKSTRUCT* pKey = (KBDLLHOOKSTRUCT*)lParam;
         int vkCode = pKey->vkCode;
 
+        // ONLY DO THIS IF THE HEADSET WINDOW IS FOCUSED
         if (SteamVRHeadsetWindow != 0 && SteamVRHeadsetWindow == GetForegroundWindow()) {
-            if (std::find(g_DriverKeys.begin(), g_DriverKeys.end(), vkCode) != g_DriverKeys.end()) {
+            
+            // --- KEY REMAPPER ---
+            auto it = g_KeyRemapper.find(vkCode);
+            if (it != g_KeyRemapper.end()) {
+                int mappedVk = it->second;
+                
+                INPUT input = {0};
+                input.type = INPUT_KEYBOARD;
+                input.ki.wVk = mappedVk;
+                
+                if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
+                    input.ki.dwFlags = KEYEVENTF_KEYUP;
+                    g_RemappedKeyActive[vkCode] = false; // Mark as released
+                } else {
+                    g_RemappedKeyActive[vkCode] = true;  // Mark as held
+                }
+                
+                SendInput(1, &input, sizeof(INPUT));
+                return 1; // Swallow the original key
+            }
+            // --------------------
+
+            // Existing SwallowKeys logic
+            if (vkCode > 0 && vkCode < 256 && g_IsDriverKey[vkCode].load(std::memory_order_relaxed)) {
                 if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
                     g_SwallowedKeyState[vkCode] = true;
                 } else if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
                     g_SwallowedKeyState[vkCode] = false;
                 }
-                return 1; 
+                return 1;
             }
         }
     }
@@ -492,7 +895,7 @@ void MouseToYawPitch()
 	mouseHMD.Yaw = mouseYaw;
 
 	mousePitch += (mousePos.y - m_HalfHeight) * mouseSensetivePitch * -1;
-	
+
 	if (!LeftHandIsRotating && !RightHandIsRotating) {
 		if (mousePitch > 90) mousePitch = 90;
 		else if (mousePitch < -90) mousePitch = -90;
@@ -502,11 +905,22 @@ void MouseToYawPitch()
 	SetCursorPos(m_HalfWidth, m_HalfHeight);
 }
 
+// --- HMD POSE CALCULATION ---
 void GetHMDData(__out THMD* HMD)
 {
 	if (IsKeyDown(KEY_ID_PLAYER_RISE_HIGHER)) HMDPosZ += StepPos;
 	if (IsKeyDown(KEY_ID_PLAYER_RISE_LOWER)) HMDPosZ -= StepPos;
 	if (IsKeyDown(KEY_ID_PLAYER_RISE_RESET)) HMDPosZ = 0;
+
+	// --- LEAN / PEEK ---
+	if (IsKeyDown(KEY_ID_LEAN_RIGHT)) LeanOffset += 0.8 * g_DtSeconds;
+	if (IsKeyDown(KEY_ID_LEAN_LEFT)) LeanOffset -= 0.8 * g_DtSeconds;
+	if (LeanOffset > 0.4) LeanOffset = 0.4;
+	if (LeanOffset < -0.4) LeanOffset = -0.4;
+
+	double leanYaw = DegToRad(cameraHMD.Yaw);
+	g_LeanOffsetX = LeanOffset * cos(leanYaw);
+	g_LeanOffsetY = -LeanOffset * sin(leanYaw);
 
 	double moveSpeed = 0.01;
 	double yawRad = DegToRad(cameraHMD.Yaw);
@@ -515,25 +929,48 @@ void GetHMDData(__out THMD* HMD)
 	if (IsKeyDown(KEY_ID_HMD_BACK))    { HMDPosX += sin(yawRad) * moveSpeed; HMDPosY += cos(yawRad) * moveSpeed; }
 	if (IsKeyDown(KEY_ID_HMD_LEFT))    { HMDPosX -= cos(yawRad) * moveSpeed; HMDPosY += sin(yawRad) * moveSpeed; }
 	if (IsKeyDown(KEY_ID_HMD_RIGHT))   { HMDPosX += cos(yawRad) * moveSpeed; HMDPosY -= sin(yawRad) * moveSpeed; }
-	if (IsKeyDown(KEY_ID_HMD_MOVE_RESET)) { HMDPosX = 0; HMDPosY = 0; }
+	if (IsKeyDown(KEY_ID_HMD_MOVE_RESET)) { HMDPosX = 0; HMDPosY = 0; LeanOffset = 0.0; }
 
-	HMD->X = HMDPosX; 
-	HMD->Y = HMDPosY; 
-	HMD->Z = HMDPosZ - CrouchOffsetZ;
-	HMD->Yaw = (cameraHMD.Yaw + FreelookYawOffset) * -1; 
-    HMD->Pitch = (cameraHMD.Pitch + FreelookPitchOffset) * -1; 
-    HMD->Roll = 0;
+	HMD->X = HMDPosX + g_LeanOffsetX + SniperHmdOffsetX;
+	HMD->Y = HMDPosY + g_LeanOffsetY + SniperHmdOffsetZ;
+	HMD->Z = HMDPosZ - CrouchOffsetZ + SniperHmdOffsetY;
+	HMD->Yaw = (cameraHMD.Yaw + FreelookYawOffset) * -1;
+    HMD->Pitch = (cameraHMD.Pitch + FreelookPitchOffset) * -1;
+    HMD->Roll = -LeanOffset * 20.0;
 }
 
+// --- CONTROLLER POSE CALCULATION & GESTURES ---
 void GetControllersData(__out TController* FirstController, __out TController* SecondController)
 {
-	float dt = max((int)deltaTime.count(), 1) / 1000.0f;
-	
+	float dt = (float)g_DtSeconds;
+
+	if (ShakeTimerL > 0) {
+		ShakeTimeL += dt * 40.0;
+		ShakeTimerL -= dt;
+		if (ShakeTimerL <= 0) { ShakeIntensityL[0] = ShakeIntensityL[1] = ShakeIntensityL[2] = 0; }
+	} else if (ManualShakeL_H || ManualShakeL_V) {
+		ShakeTimeL += dt * 40.0;
+	} else {
+		ShakeTimeL = 0;
+	}
+
+	if (ShakeTimerR > 0) {
+		ShakeTimeR += dt * 40.0;
+		ShakeTimerR -= dt;
+		if (ShakeTimerR <= 0) { ShakeIntensityR[0] = ShakeIntensityR[1] = ShakeIntensityR[2] = 0; }
+	} else if (ManualShakeR_H || ManualShakeR_V) {
+		ShakeTimeR += dt * 40.0;
+	} else {
+		ShakeTimeR = 0;
+	}
+
 	FirstController->AxisX = 0; FirstController->AxisY = 0; FirstController->Buttons = 0; FirstController->Trigger = 0;
 	SecondController->AxisX = 0; SecondController->AxisY = 0; SecondController->Buttons = 0; SecondController->Trigger = 0;
 	SecondCtrlYPROffset[0] = 0; SecondCtrlYPROffset[1] = 0; SecondCtrlYPROffset[2] = 0;
 	FirstController->Roll = 0;
 	SecondController->Roll = 0;
+	FirstController->UseQuat = false;
+	SecondController->UseQuat = false;
 
 	if (HeadsetWindowFocused)
 	{
@@ -543,39 +980,39 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 			RightHandRotOffset[0] = RightHandRotOffset[1] = RightHandRotOffset[2] = 0.0;
 			LeftXOffset = 0.0; LeftRotateYOffset = 0.0; LeftZOffset = 0.0; LeftZOffset_Target = 0.0;
 			RightXOffset = 0.0; RightYOffset = 0.0; RightZOffset = 0.0; RightZOffset_Target = 0.0;
-            
+
             SeqOffsetL[0] = SeqOffsetL[1] = SeqOffsetL[2] = 0;
             SeqOffsetR[0] = SeqOffsetR[1] = SeqOffsetR[2] = 0;
             SeqRotL[0] = SeqRotL[1] = SeqRotL[2] = 0;
             SeqRotR[0] = SeqRotR[1] = SeqRotR[2] = 0;
 		}
 	}
-	
+
 	LeftHandYaw = 0; LeftHandPitch = 0; LeftAngleDist = 0; LeftRadDist = 0;
 	RightHandYaw = 0; RightHandPitch = 0; RightAngleDist = 0; RightRadDist = 0;
 
 	bool isCrouching = HeadsetWindowFocused && CheckButton(KEY_ID_CROUCH, Btn_Crouch);
 	bool isProne = HeadsetWindowFocused && CheckButton(KEY_ID_PRONE, Btn_Prone);
-	if (isCrouching || isProne) HMDPosZ = 0; 
-	
+	if (isCrouching || isProne) HMDPosZ = 0;
+
 	float targetHeightOffset = 0.0f;
 	if (isCrouching) targetHeightOffset = 0.8f;
-	if (isProne) targetHeightOffset = 1.4f; 
-	
-	float crouchSpeed = 15.0f; 
-	
+	if (isProne) targetHeightOffset = 1.4f;
+
+	float crouchSpeed = 15.0f;
+
 	CrouchOffsetZ += (targetHeightOffset - CrouchOffsetZ) * crouchSpeed * dt;
 	if (std::abs(CrouchOffsetZ - targetHeightOffset) < 0.001f) CrouchOffsetZ = targetHeightOffset;
 
 	deltaPitch = mouseHMD.Yaw - oldPitch; oldPitch = mouseHMD.Yaw;
 	deltaRoll = mouseHMD.Pitch - oldRoll; oldRoll = mouseHMD.Pitch;
-	
+
 	if (deltaPitch > 360.0f) deltaPitch = 360.0f; if (deltaPitch < -360.0f) deltaPitch = -360.0f;
 	if (deltaRoll > 360.0f) deltaRoll = 360.0f; if (deltaRoll < -360.0f) deltaRoll = -360.0f;
 
 	if (LeftHandIsRotating) { LeftHandRotOffset[0] += deltaPitch; LeftHandRotOffset[1] += deltaRoll; }
 	if (RightHandIsRotating) { RightHandRotOffset[0] += deltaPitch; RightHandRotOffset[1] += deltaRoll; }
-	
+
 	float currentSensitivity = HandMoveSensitivity;
 	float wheelSensitivity = RotationSpeed;
 	if (IsKeyDown(KEY_ID_FINE_TUNE)) {
@@ -589,7 +1026,7 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 	if (!LeftHandIsRotating && !RightHandIsRotating) {
 		if (AutoSwingActive) {
 			if (wheelDelta != 0) {
-				ArmSwingSpeed += wheelDelta * 0.005; 
+				ArmSwingSpeed += wheelDelta * 0.005;
 				if (ArmSwingSpeed < 0.5) ArmSwingSpeed = 0.5;
 				if (ArmSwingSpeed > 15.0) ArmSwingSpeed = 15.0;
 			}
@@ -597,16 +1034,16 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 			if (wheelDelta != 0) {
 				LeftZOffset_Target -= wheelDelta * ScrollPushPullSpeed;
 				RightZOffset_Target -= wheelDelta * ScrollPushPullSpeed;
-				if (LeftZOffset_Target < -0.8) LeftZOffset_Target = -0.8; 
+				if (LeftZOffset_Target < -0.8) LeftZOffset_Target = -0.8;
 				if (LeftZOffset_Target > 0.8) LeftZOffset_Target = 0.8;
-				if (RightZOffset_Target < -0.8) RightZOffset_Target = -0.8; 
+				if (RightZOffset_Target < -0.8) RightZOffset_Target = -0.8;
 				if (RightZOffset_Target > 0.8) RightZOffset_Target = 0.8;
 			}
 			LeftZOffset += (LeftZOffset_Target - LeftZOffset) * 0.5;
 			RightZOffset += (RightZOffset_Target - RightZOffset) * 0.5;
 		}
 	} else {
-		if (LeftHandIsRotating && wheelDelta != 0) LeftHandRotOffset[2] += wheelDelta * wheelSensitivity; 
+		if (LeftHandIsRotating && wheelDelta != 0) LeftHandRotOffset[2] += wheelDelta * wheelSensitivity;
 		if (RightHandIsRotating && wheelDelta != 0) RightHandRotOffset[2] += wheelDelta * wheelSensitivity;
 	}
 
@@ -618,7 +1055,7 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 			if (IsKeyDown(KEY_ID_HAND_BACK)) { LeftZOffset += currentSensitivity * dt; LeftZOffset_Target += currentSensitivity * dt; }
 			if (IsKeyDown(KEY_ID_HAND_LEFT)) LeftXOffset -= currentSensitivity * dt;
 			if (IsKeyDown(KEY_ID_HAND_RIGHT)) LeftXOffset += currentSensitivity * dt;
-			if (wheelDelta != 0) LeftHandRotOffset[2] += wheelDelta * wheelSensitivity; 
+			if (wheelDelta != 0) LeftHandRotOffset[2] += wheelDelta * wheelSensitivity;
 		}
 	}
 	if (RightHandIsRotating) {
@@ -633,9 +1070,11 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 		}
 	}
 
-	if (IsKeyDown(KEY_ID_MOVE_CONTROLLERS_FORWARD)) HandRadDist += 0.005;
-	if (IsKeyDown(KEY_ID_MOVE_CONTROLLERS_BACK)) HandRadDist -= 0.005;
+	// Vanilla HandRadDist
+	if (IsKeyDown(KEY_ID_MOVE_CONTROLLERS_FORWARD)) HandRadDist += 0.005f;
+	if (IsKeyDown(KEY_ID_MOVE_CONTROLLERS_BACK)) HandRadDist -= 0.005f;
 	if (!IsKeyDown(KEY_ID_MOVE_CONTROLLERS_FORWARD) && !IsKeyDown(KEY_ID_MOVE_CONTROLLERS_BACK)) HandRadDist = 0;
+
 	if (IsSmoothResetting) {
 		SmoothResetTimer += dt;
 		double progress = SmoothResetTimer / SmoothResetDuration;
@@ -644,7 +1083,6 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 			IsSmoothResetting = false;
 		}
 
-		// Lerp the offsets back to 0
 		LeftXOffset = StartResetX_L * (1.0 - progress);
 		LeftRotateYOffset = StartResetY_L * (1.0 - progress);
 		LeftZOffset = StartResetZ_L * (1.0 - progress);
@@ -653,18 +1091,13 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 		RightYOffset = StartResetY_R * (1.0 - progress);
 		RightZOffset = StartResetZ_R * (1.0 - progress);
 
-		// Also smoothly return the rotation offsets
-		// Linear rotation lerp — matches the position timing above
 		LeftHandRotOffset[0] = StartResetRotL_X * (1.0 - progress);
 		LeftHandRotOffset[1] = StartResetRotL_Y * (1.0 - progress);
 		LeftHandRotOffset[2] = StartResetRotL_Z * (1.0 - progress);
 		RightHandRotOffset[0] = StartResetRotR_X * (1.0 - progress);
 		RightHandRotOffset[1] = StartResetRotR_Y * (1.0 - progress);
 		RightHandRotOffset[2] = StartResetRotR_Z * (1.0 - progress);
-		    // NEW: keep the targets locked at 0 every frame during the reset.
-		// Without this, any residual scroll delta or held W key during the
-		// ~36-frame reset window re-pollutes the target, causing the hand to
-		// yeet back to its old position once the reset finishes.
+
 		LeftZOffset_Target = 0.0;
 		RightZOffset_Target = 0.0;
 	}
@@ -679,7 +1112,6 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 		double supY = FPS_LeftOffsetY + LeftRotateYOffset;
 		double supZ = FPS_LeftOffsetZ - LeftZOffset;
 
-		// *** NEW: Apply Gesture MOVE Offsets to FPS Mode ***
 		gunX += SeqOffsetR[0];
 		gunY += SeqOffsetR[2];
 		gunZ -= SeqOffsetR[1];
@@ -687,7 +1119,6 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 		supX += SeqOffsetL[0];
 		supY += SeqOffsetL[2];
 		supZ -= SeqOffsetL[1];
-		// *************************************************
 
 		if (AutoSwingActive) {
 			ArmSwingTime += dt * ArmSwingSpeed;
@@ -699,8 +1130,8 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 		if (PumpTimer > 0.0) {
 			PumpTimer -= dt;
 			if (PumpTimer < 0.0) PumpTimer = 0.0;
-			double pumpProgress = 1.0 - (PumpTimer / 0.35);
-			double pumpOffset = sin(pumpProgress * 3.141592653589793) * 0.15;
+			double pumpProgress = 1.0 - (PumpTimer / PumpDuration);
+			double pumpOffset = sin(pumpProgress * 3.141592653589793) * PumpDistance;
 			supZ -= pumpOffset;
 		}
 
@@ -723,6 +1154,49 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 		double uy =  cos(effPitchRad);
 		double uz =  cos(effYawRad) * sin(effPitchRad);
 
+		// --- SNIPER / BIPOD MODE ---
+		if (SniperJustStarted) {
+			SniperAnchorX = hmdWX + rx*supX + ux*supY + fx*supZ;
+			SniperAnchorY = hmdWY + ry*supX + uy*supY + fy*supZ;
+			SniperAnchorZ = hmdWZ + rz*supX + uz*supY + fz*supZ;
+			SniperJustStarted = false;
+			vr::VRDriverLog()->Log("FlatVR: Bipod Locked. Anchoring Support Hand.\n");
+		}
+
+		if (SniperModeActive) {
+			double reqHmdWX = SniperAnchorX - (rx*supX + ux*supY + fx*supZ);
+			double reqHmdWY = SniperAnchorY - (ry*supX + uy*supY + fy*supZ);
+			double reqHmdWZ = SniperAnchorZ - (rz*supX + uz*supY + fz*supZ);
+
+			SniperHmdOffsetX = reqHmdWX - HMDPosX;
+			SniperHmdOffsetY = reqHmdWY - (HMDPosZ - CrouchOffsetZ);
+			SniperHmdOffsetZ = reqHmdWZ - HMDPosY;
+
+			hmdWX = HMDPosX + SniperHmdOffsetX;
+			hmdWY = HMDPosZ - CrouchOffsetZ + SniperHmdOffsetY;
+			hmdWZ = HMDPosY + SniperHmdOffsetZ;
+		} else if (SniperExiting) {
+			SniperExitTimer += dt;
+			double progress = SniperExitTimer / 0.5;
+			if (progress >= 1.0) {
+				progress = 1.0;
+				SniperExiting = false;
+				SniperHmdOffsetX = SniperHmdOffsetY = SniperHmdOffsetZ = 0.0;
+				vr::VRDriverLog()->Log("FlatVR: Bipod Released. HMD Returned.\n");
+			}
+
+			SniperHmdOffsetX = SniperHmdOffsetX * (1.0 - progress);
+			SniperHmdOffsetY = SniperHmdOffsetY * (1.0 - progress);
+			SniperHmdOffsetZ = SniperHmdOffsetZ * (1.0 - progress);
+
+			hmdWX = HMDPosX + SniperHmdOffsetX;
+			hmdWY = HMDPosZ - CrouchOffsetZ + SniperHmdOffsetY;
+			hmdWZ = HMDPosY + SniperHmdOffsetZ;
+		} else {
+			SniperHmdOffsetX = SniperHmdOffsetY = SniperHmdOffsetZ = 0.0;
+		}
+		// --- END SNIPER MODE ---
+
 		double gunWX = hmdWX + rx*gunX + ux*gunY + fx*gunZ;
 		double gunWY = hmdWY + ry*gunX + uy*gunY + fy*gunZ;
 		double gunWZ = hmdWZ + rz*gunX + uz*gunY + fz*gunZ;
@@ -743,7 +1217,7 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 		double cam_rx = rx, cam_ry = ry, cam_rz = rz;
 		double cam_ux = ux, cam_uy = uy, cam_uz = uz;
 
-		double gYaw = DegToRad(FPS_GunZeroYaw + RightHandRotOffset[0] + SeqRotR[0]);
+		double gYaw = DegToRad(FPS_GunZeroYaw - RightHandRotOffset[0] + SeqRotR[0]); 
 		double gPitch = DegToRad(FPS_GunZeroPitch + RightHandRotOffset[1] + SeqRotR[1]);
 
 		double f1x = cam_fx * cos(gYaw) + cam_rx * sin(gYaw);
@@ -754,11 +1228,35 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 		double f2y = f1y * cos(gPitch) + cam_uy * sin(gPitch);
 		double f2z = f1z * cos(gPitch) + cam_uz * sin(gPitch);
 
-		SecondController->Yaw   = -atan2(-f2x, -f2z) * 57.29577951308232;
-		SecondController->Pitch = -asin(f2y) * 57.29577951308232;
-		SecondController->Roll  = FPS_GunZeroRoll + RightHandRotOffset[2] + SeqRotR[2];
+		// Gimbal lock protection for Gun Hand
+		double clampF2Y = f2y;
+		if (clampF2Y > 1.0) clampF2Y = 1.0;
+		if (clampF2Y < -1.0) clampF2Y = -1.0;
+		
+		// FIX 1: Just clamp the pitch. No custom fallback. (Up is positive)
+		SecondController->Pitch = asin(clampF2Y) * 57.29577951308232;
 
-		double lYaw = DegToRad(FPS_LeftZeroYaw + LeftHandRotOffset[0] + SeqRotL[0]);
+		if (std::abs(f2y) > 0.999) {
+			// FIX 2: Use mouseHMD.Yaw (the absolute mouse position) instead of the frozen camera. 
+			// This forces the hand to track your mouse continuously, even in Gimbal Lock.
+			SecondController->Yaw = -mouseHMD.Yaw; 
+		} else {
+			double rawYaw = atan2(f2x, f2z) * 57.29577951308232;
+			SecondController->Yaw = rawYaw - 180.0; // FIX 3: Normal non-inverted output
+		}
+		
+		SecondController->Roll  = -(FPS_GunZeroRoll + RightHandRotOffset[2] + SeqRotR[2]); 
+
+		// Gimbal-free orientation: sent to SteamVR as-is, the Euler values above are only kept for pose-saving/lock fallbacks.
+		{
+			double cf[3] = { cam_fx, cam_fy, cam_fz }, cr_[3] = { cam_rx, cam_ry, cam_rz }, cu[3] = { cam_ux, cam_uy, cam_uz };
+			BuildFpsHandQuat(cf, cr_, cu,
+				FPS_GunZeroYaw + FPS_YawSign * (-RightHandRotOffset[0] + SeqRotR[0]),
+				FPS_GunZeroPitch + FPS_PitchSign * (RightHandRotOffset[1] + SeqRotR[1]),
+				-(FPS_GunZeroRoll + RightHandRotOffset[2] + SeqRotR[2]), SecondController, g_PrevGunQ);
+		}
+
+		double lYaw = DegToRad(FPS_LeftZeroYaw - LeftHandRotOffset[0] + SeqRotL[0]); 
 		double lPitch = DegToRad(FPS_LeftZeroPitch + LeftHandRotOffset[1] + SeqRotL[1]);
 
 		double lf1x = cam_fx * cos(lYaw) + cam_rx * sin(lYaw);
@@ -769,9 +1267,29 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 		double lf2y = lf1y * cos(lPitch) + cam_uy * sin(lPitch);
 		double lf2z = lf1z * cos(lPitch) + cam_uz * sin(lPitch);
 
-		FirstController->Yaw    = -atan2(-lf2x, -lf2z) * 57.29577951308232;
-		FirstController->Pitch  = -asin(lf2y) * 57.29577951308232;
-		FirstController->Roll   = FPS_LeftZeroRoll + LeftHandRotOffset[2] + SeqRotL[2];
+		// Gimbal lock protection for Support Hand
+		double clampLf2Y = lf2y;
+		if (clampLf2Y > 1.0) clampLf2Y = 1.0;
+		if (clampLf2Y < -1.0) clampLf2Y = -1.0;
+		
+		FirstController->Pitch = asin(clampLf2Y) * 57.29577951308232;
+
+		if (std::abs(lf2y) > 0.999) {
+			// FIX 2 (Left Hand): Use the absolute mouse position
+			FirstController->Yaw = -mouseHMD.Yaw;
+		} else {
+			double rawYawL = atan2(lf2x, lf2z) * 57.29577951308232;
+			FirstController->Yaw = rawYawL - 180.0;
+		}
+
+		FirstController->Roll = -(FPS_LeftZeroRoll + LeftHandRotOffset[2] + SeqRotL[2]);
+		{
+			double cf[3] = { cam_fx, cam_fy, cam_fz }, cr_[3] = { cam_rx, cam_ry, cam_rz }, cu[3] = { cam_ux, cam_uy, cam_uz };
+			BuildFpsHandQuat(cf, cr_, cu,
+				FPS_LeftZeroYaw + FPS_YawSign * (-LeftHandRotOffset[0] + SeqRotL[0]),
+				FPS_LeftZeroPitch + FPS_PitchSign * (LeftHandRotOffset[1] + SeqRotL[1]),
+				-(FPS_LeftZeroRoll + LeftHandRotOffset[2] + SeqRotL[2]), FirstController, g_PrevSupQ);
+		}
 
 	} else {
 		FirstCtrlPos[0] = (0.4 - LeftRadDist + HandRadDist) * sin(DegToRad(OffsetYPR(OffsetYPR(cameraHMD.Yaw + 180, -17), LeftAngleDist)));
@@ -781,8 +1299,8 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 		double moveX_L = LeftXOffset * cos(yawRad) + LeftZOffset * sin(yawRad);
 		double moveZ_L = -LeftXOffset * sin(yawRad) + LeftZOffset * cos(yawRad);
 
-		FirstController->X = FirstCtrlPos[0] + moveX_L + HandCenterOffsetX + HMDPosX;
-		FirstController->Y = FirstCtrlPos[1] + moveZ_L + HMDPosY;
+		FirstController->X = FirstCtrlPos[0] + moveX_L + HandCenterOffsetX + HMDPosX + g_LeanOffsetX;
+		FirstController->Y = FirstCtrlPos[1] + moveZ_L + HMDPosY + g_LeanOffsetY;
 		FirstController->Z = FirstCtrlPos[2] + LeftRotateYOffset - 0.15;
 
 		SecondCtrlPos[0] = (0.4 - RightRadDist + HandRadDist) * sin(DegToRad(OffsetYPR(OffsetYPR(cameraHMD.Yaw + 180, 17), RightAngleDist)));
@@ -792,8 +1310,8 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 		double moveX_R = RightXOffset * cos(yawRad) + RightZOffset * sin(yawRad);
 		double moveZ_R = -RightXOffset * sin(yawRad) + RightZOffset * cos(yawRad);
 
-		SecondController->X = SecondCtrlPos[0] + moveX_R + HandCenterOffsetX + HMDPosX;
-		SecondController->Y = SecondCtrlPos[1] + moveZ_R + HMDPosY;
+		SecondController->X = SecondCtrlPos[0] + moveX_R + HandCenterOffsetX + HMDPosX + g_LeanOffsetX;
+		SecondController->Y = SecondCtrlPos[1] + moveZ_R + HMDPosY + g_LeanOffsetY;
 		SecondController->Z = SecondCtrlPos[2] + RightYOffset - 0.15;
 
 		FirstController->Yaw = OffsetYPR(cameraHMD.Yaw, LeftHandYaw);
@@ -813,36 +1331,80 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 
 	if (CheckButton(KEY_ID_LEFT_GRIP, Btn_LeftGrip)) FirstController->Buttons |= GRIP_BTN;
 	if (CheckButton(KEY_ID_LEFT_MENU, Btn_LeftMenu)) FirstController->Buttons |= MENU_BTN;
-	// --- Left Trigger (Hydraulic Smoothing) ---
 	float targetTrigL = CheckButton(KEY_ID_LEFT_TRIGGER, Btn_LeftTrigger) ? 1.0f : 0.0f;
-	// Move the trigger towards the target at 15 units per second
-	SmoothTriggerL += (targetTrigL - SmoothTriggerL) * 15.0f * dt; 
-	// Snap to exact 0 or 1 if we get close enough, to prevent tiny phantom floats
+	SmoothTriggerL += (targetTrigL - SmoothTriggerL) * 15.0f * dt;
 	if (SmoothTriggerL < 0.01f) SmoothTriggerL = 0.0f;
 	if (SmoothTriggerL > 0.99f) SmoothTriggerL = 1.0f;
 	FirstController->Trigger = SmoothTriggerL;
 	if (CheckButton(KEY_ID_LEFT_SYSTEM, Btn_LeftSystem)) FirstController->Buttons |= SYS_BTN;
 
-	bool leftPadActive = false;
-	if (CheckButton(KEY_ID_UP, Btn_Up)) { FirstController->AxisY = 1; leftPadActive = true; }
-	if (CheckButton(KEY_ID_DOWN, Btn_Down)) { FirstController->AxisY = -1; leftPadActive = true; }
-	if (CheckButton(KEY_ID_LEFT, Btn_Left)) { FirstController->AxisX = -1; leftPadActive = true; }
-	if (CheckButton(KEY_ID_RIGHT, Btn_Right)) { FirstController->AxisX = 1; leftPadActive = true; }
-	if (CheckButton(KEY_ID_LEFT_TRACKPAD_CLICK, Btn_LeftTrackpadClick)) leftPadActive = true;
-	if (leftPadActive) FirstController->Buttons |= THUMB_BTN; 
+	// --- LEFT TRACKPAD (Virtual Thumbstick) ---
+    float targetX_L = 0.0f, targetY_L = 0.0f;
+    if (CheckButton(KEY_ID_UP, Btn_Up))       targetY_L =  1.0f;
+    if (CheckButton(KEY_ID_DOWN, Btn_Down))   targetY_L = -1.0f;
+    if (CheckButton(KEY_ID_LEFT, Btn_Left))   targetX_L = -1.0f;
+    if (CheckButton(KEY_ID_RIGHT, Btn_Right)) targetX_L =  1.0f;
 
-	bool rightPadActive = false;
-	if (CheckButton(KEY_ID_TURN_LEFT, Btn_TurnLeft)) { SecondController->AxisX = -1; rightPadActive = true; }
-	if (CheckButton(KEY_ID_TURN_RIGHT, Btn_TurnRight)) { SecondController->AxisX = 1; rightPadActive = true; }
-	if (CheckButton(KEY_ID_TELEPORT, Btn_Teleport)) { SecondController->AxisY = -1; rightPadActive = true; }
-	if (CheckButton(KEY_ID_CHANGE_WEAPON, Btn_ChangeWeapon)) { SecondController->AxisY = 1; rightPadActive = true; }
-	if (CheckButton(KEY_ID_RIGHT_TRACKPAD_CLICK, Btn_RightTrackpadClick)) rightPadActive = true;
-	if (rightPadActive) SecondController->Buttons |= THUMB_BTN;
+    bool distanceActive = CheckButton(KEY_ID_TRACKPAD_DISTANCE, Btn_TrackpadDistance);
+    
+    // Calculate magnitude for diagonal movement normalization
+    float magnitude_L = sqrt(targetX_L*targetX_L + targetY_L*targetY_L);
+    if (magnitude_L > 0.0f) {
+        float cap = distanceActive ? TrackpadFull : TrackpadHalf;
+        targetX_L = (targetX_L / magnitude_L) * cap;
+        targetY_L = (targetY_L / magnitude_L) * cap;
+    }
+
+    // Smoothly glide the axes back to center when released
+    CurrentAxisX_L += (targetX_L - CurrentAxisX_L) * 15.0f * dt;
+    CurrentAxisY_L += (targetY_L - CurrentAxisY_L) * 15.0f * dt;
+
+    if (std::abs(CurrentAxisX_L) < 0.01f) CurrentAxisX_L = 0.0f;
+    if (std::abs(CurrentAxisY_L) < 0.01f) CurrentAxisY_L = 0.0f;
+
+    if (CurrentAxisX_L != 0.0f || CurrentAxisY_L != 0.0f) {
+        FirstController->AxisX = CurrentAxisX_L;
+        FirstController->AxisY = CurrentAxisY_L;
+        FirstController->Buttons |= THUMB_BTN;
+    }
+    
+    if (CheckButton(KEY_ID_LEFT_TRACKPAD_CLICK, Btn_LeftTrackpadClick)) {
+        FirstController->Buttons |= THUMB_BTN; 
+    }
+
+	// --- RIGHT TRACKPAD (Virtual Thumbstick) ---
+    float targetX_R = 0.0f, targetY_R = 0.0f;
+    if (CheckButton(KEY_ID_TURN_LEFT, Btn_TurnLeft))           targetX_R = -1.0f;
+    if (CheckButton(KEY_ID_TURN_RIGHT, Btn_TurnRight))         targetX_R =  1.0f;
+    if (CheckButton(KEY_ID_TELEPORT, Btn_Teleport))            targetY_R = -1.0f;
+    if (CheckButton(KEY_ID_CHANGE_WEAPON, Btn_ChangeWeapon))   targetY_R =  1.0f;
+
+    float magnitude_R = sqrt(targetX_R*targetX_R + targetY_R*targetY_R);
+    if (magnitude_R > 0.0f) {
+        float cap = distanceActive ? TrackpadFull : TrackpadHalf;
+        targetX_R = (targetX_R / magnitude_R) * cap;
+        targetY_R = (targetY_R / magnitude_R) * cap;
+    }
+
+    CurrentAxisX_R += (targetX_R - CurrentAxisX_R) * 15.0f * dt;
+    CurrentAxisY_R += (targetY_R - CurrentAxisY_R) * 15.0f * dt;
+
+    if (std::abs(CurrentAxisX_R) < 0.01f) CurrentAxisX_R = 0.0f;
+    if (std::abs(CurrentAxisY_R) < 0.01f) CurrentAxisY_R = 0.0f;
+
+    if (CurrentAxisX_R != 0.0f || CurrentAxisY_R != 0.0f) {
+        SecondController->AxisX = CurrentAxisX_R;
+        SecondController->AxisY = CurrentAxisY_R;
+        SecondController->Buttons |= THUMB_BTN;
+    }
+    
+    if (CheckButton(KEY_ID_RIGHT_TRACKPAD_CLICK, Btn_RightTrackpadClick)) {
+        SecondController->Buttons |= THUMB_BTN;
+    }
 
 	if (CheckButton(KEY_ID_RIGHT_MENU, Btn_RightMenu)) SecondController->Buttons |= MENU_BTN;
 	if (CheckButton(KEY_ID_RIGHT_GRIP, Btn_RightGrip)) SecondController->Buttons |= GRIP_BTN;
 	if (CheckButton(KEY_ID_RIGHT_SYSTEM, Btn_RightSystem)) SecondController->Buttons |= SYS_BTN;
-	// --- Right Trigger (Hydraulic Smoothing) ---
 	float targetTrigR = CheckButton(KEY_ID_RIGHT_TRIGGER, Btn_RightTrigger) ? 1.0f : 0.0f;
 	SmoothTriggerR += (targetTrigR - SmoothTriggerR) * 15.0f * dt;
 	if (SmoothTriggerR < 0.01f) SmoothTriggerR = 0.0f;
@@ -879,10 +1441,10 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 		SecondController->Yaw = OffsetYPR(SecondController->Yaw, RightHandRotOffset[0]);
 		SecondController->Pitch = OffsetYPR(SecondController->Pitch, RightHandRotOffset[1]);
 		SecondController->Roll = OffsetYPR(SecondController->Roll, RightHandRotOffset[2]);
-		
+
 		FirstController->Yaw += SeqRotL[0]; FirstController->Pitch += SeqRotL[1]; FirstController->Roll += SeqRotL[2];
 		SecondController->Yaw += SeqRotR[0]; SecondController->Pitch += SeqRotR[1]; SecondController->Roll += SeqRotR[2];
-		
+
 		FirstController->Yaw = FirstController->Yaw * -1; FirstController->Pitch = FirstController->Pitch * -1;
 		SecondController->Yaw = SecondController->Yaw * -1; SecondController->Pitch = SecondController->Pitch * -1;
 	}
@@ -899,124 +1461,264 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 		SecondController->Y -= swingY;
 	}
 
-	if (CurrentStepIndex == -1) {
-		if (HeadsetWindowFocused) {
-			std::string gestBasePath = (std::string)g_SteamPathStr + "/steamapps/common/SteamVR/drivers/FlatVR/Resources/Custom_Gestures/";
-			
-			if (IsKeyDown(KEY_ID_GESTURE_CUSTOM_5)) { LoadGestureSequence(gestBasePath + "5.gesture"); if (!ActiveSequence.empty()) CurrentStepIndex = 0; }
-			else if (IsKeyDown(KEY_ID_GESTURE_CUSTOM_6)) { LoadGestureSequence(gestBasePath + "6.gesture"); if (!ActiveSequence.empty()) CurrentStepIndex = 0; }
-			else if (IsKeyDown(KEY_ID_GESTURE_CUSTOM_7)) { LoadGestureSequence(gestBasePath + "7.gesture"); if (!ActiveSequence.empty()) CurrentStepIndex = 0; }
-			else if (IsKeyDown(KEY_ID_GESTURE_CUSTOM_8)) { LoadGestureSequence(gestBasePath + "8.gesture"); if (!ActiveSequence.empty()) CurrentStepIndex = 0; }
-			else if (IsKeyDown(KEY_ID_GESTURE_CUSTOM_9)) { LoadGestureSequence(gestBasePath + "9.gesture"); if (!ActiveSequence.empty()) CurrentStepIndex = 0; }
-			else if (IsKeyDown(KEY_ID_GESTURE_CUSTOM_0)) { LoadGestureSequence(gestBasePath + "0.gesture"); if (!ActiveSequence.empty()) CurrentStepIndex = 0; }
-			
-			if (CurrentStepIndex == 0) {
-				StepTimer = 0.0;
-				StartSeqOffsetL[0] = SeqOffsetL[0]; StartSeqOffsetL[1] = SeqOffsetL[1]; StartSeqOffsetL[2] = SeqOffsetL[2];
-				StartSeqOffsetR[0] = SeqOffsetR[0]; StartSeqOffsetR[1] = SeqOffsetR[1]; StartSeqOffsetR[2] = SeqOffsetR[2];
-				StartSeqRotL[0] = SeqRotL[0]; StartSeqRotL[1] = SeqRotL[1]; StartSeqRotL[2] = SeqRotL[2];
-				StartSeqRotR[0] = SeqRotR[0]; StartSeqRotR[1] = SeqRotR[1]; StartSeqRotR[2] = SeqRotR[2];
+	// --- PARALLEL GESTURE ENGINE ---
+	if (HeadsetWindowFocused) {
+		int currentPressed = 0;
+		if (IsKeyDown(KEY_ID_GESTURE_CUSTOM_5)) currentPressed = 1;
+		else if (IsKeyDown(KEY_ID_GESTURE_CUSTOM_6)) currentPressed = 2;
+		else if (IsKeyDown(KEY_ID_GESTURE_CUSTOM_7)) currentPressed = 3;
+		else if (IsKeyDown(KEY_ID_GESTURE_CUSTOM_8)) currentPressed = 4;
+		else if (IsKeyDown(KEY_ID_GESTURE_CUSTOM_9)) currentPressed = 5;
+		else if (IsKeyDown(KEY_ID_GESTURE_CUSTOM_0)) currentPressed = 6;
+		else if (IsKeyDown(KEY_ID_GESTURE_MINUS)) currentPressed = 7;
+		else if (IsKeyDown(KEY_ID_GESTURE_EQUALS)) currentPressed = 8;
+
+		bool justPressed = (currentPressed != 0 && currentPressed != PrevPressedGesture);
+		PrevPressedGesture = currentPressed;
+
+		if (justPressed) {
+			if (currentPressed == g_ActiveGestureKey && (NextStepIndex > 0 || !RunningSteps.empty())) {
+				RunningSteps.clear();
+				ActiveSequence.clear();
+				NextStepIndex = 0;
+				g_ActiveGestureKey = 0;
+
+				SeqOffsetL[0] = SeqOffsetL[1] = SeqOffsetL[2] = 0;
+				SeqOffsetR[0] = SeqOffsetR[1] = SeqOffsetR[2] = 0;
+				SeqRotL[0] = SeqRotL[1] = SeqRotL[2] = 0;
+				SeqRotR[0] = SeqRotR[1] = SeqRotR[2] = 0;
 
 				SeqGripL = SeqGripR = SeqTrigL = SeqTrigR = -1;
 				SeqMenuL = SeqMenuR = SeqSysL = SeqSysR = -1;
 				SeqTrackpadCL = SeqTrackpadCR = SeqTrackpadUL = SeqTrackpadUR = -1;
 				SeqTrackpadDL = SeqTrackpadDR = SeqTrackpadLL = SeqTrackpadLR = -1;
 				SeqTrackpadRL = SeqTrackpadRR = SeqBtnAL = SeqBtnAR = SeqBtnBL = SeqBtnBR = -1;
+
+				vr::VRDriverLog()->Log("FlatVR: Gesture Cancelled\n");
+			} else {
+				RunningSteps.clear();
+				ActiveSequence.clear();
+				NextStepIndex = 0;
+
+				std::string slot = "";
+				if (currentPressed == 1) slot = "5";
+				else if (currentPressed == 2) slot = "6";
+				else if (currentPressed == 3) slot = "7";
+				else if (currentPressed == 4) slot = "8";
+				else if (currentPressed == 5) slot = "9";
+				else if (currentPressed == 6) slot = "0";
+				else if (currentPressed == 7) slot = "minus";
+				else if (currentPressed == 8) slot = "equals";
+
+				if (!slot.empty()) {
+					std::string prof = g_DriverFolderStr + "/Resources/Custom_Gestures/" + g_ActiveProfileName + "/" + slot + ".gesture";
+					std::string def = g_DriverFolderStr + "/Resources/Custom_Gestures/Default/" + slot + ".gesture";
+					std::string old = g_DriverFolderStr + "/Resources/Custom_Gestures/" + slot + ".gesture";
+
+					std::string path = old;
+					if (GetFileAttributesA(prof.c_str()) != INVALID_FILE_ATTRIBUTES) path = prof;
+					else if (GetFileAttributesA(def.c_str()) != INVALID_FILE_ATTRIBUTES) path = def;
+
+					LoadGestureSequence(path);
+
+					if (!ActiveSequence.empty()) {
+						g_ActiveGestureKey = currentPressed;
+
+						StartSeqOffsetL[0] = SeqOffsetL[0]; StartSeqOffsetL[1] = SeqOffsetL[1]; StartSeqOffsetL[2] = SeqOffsetL[2];
+						StartSeqOffsetR[0] = SeqOffsetR[0]; StartSeqOffsetR[1] = SeqOffsetR[1]; StartSeqOffsetR[2] = SeqOffsetR[2];
+						StartSeqRotL[0] = SeqRotL[0]; StartSeqRotL[1] = SeqRotL[1]; StartSeqRotL[2] = SeqRotL[2];
+						StartSeqRotR[0] = SeqRotR[0]; StartSeqRotR[1] = SeqRotR[1]; StartSeqRotR[2] = SeqRotR[2];
+
+						NextStepIndex = 0;
+						RunningSteps.push_back({ NextStepIndex, 0.0 });
+						NextStepIndex++;
+						while (NextStepIndex < ActiveSequence.size() && ActiveSequence[NextStepIndex].isParallel) {
+							RunningSteps.push_back({ NextStepIndex, 0.0 });
+							NextStepIndex++;
+						}
+					}
+				}
 			}
 		}
 	}
 
-	if (CurrentStepIndex >= 0 && CurrentStepIndex < ActiveSequence.size()) {
-		GestureStep& step = ActiveSequence[CurrentStepIndex];
-		
-		if (StepTimer == 0.0) {
-			StepInitialOffsetL[0] = SeqOffsetL[0]; StepInitialOffsetL[1] = SeqOffsetL[1]; StepInitialOffsetL[2] = SeqOffsetL[2];
-			StepInitialOffsetR[0] = SeqOffsetR[0]; StepInitialOffsetR[1] = SeqOffsetR[1]; StepInitialOffsetR[2] = SeqOffsetR[2];
-			StepInitialRotL[0] = SeqRotL[0]; StepInitialRotL[1] = SeqRotL[1]; StepInitialRotL[2] = SeqRotL[2];
-			StepInitialRotR[0] = SeqRotR[0]; StepInitialRotR[1] = SeqRotR[1]; StepInitialRotR[2] = SeqRotR[2];
+	if (!RunningSteps.empty()) {
+		for (auto& rs : RunningSteps) {
+			GestureStep& step = ActiveSequence[rs.index];
+
+			rs.timer += dt;
+
+			if (rs.timer < step.delay) {
+				continue;
+			}
+
+			if (!rs.initialized) {
+                if (step.isHmdRelative) {
+                    double effYaw = DegToRad(cameraHMD.Yaw);
+                    double effPitch = DegToRad(cameraHMD.Pitch);
+                    double rx =  cos(effYaw), ry = -sin(effYaw), rz =  0;
+                    double fx = -sin(effYaw) * cos(effPitch), fy = -cos(effYaw) * cos(effPitch), fz =  sin(effPitch);
+                    double ux =  sin(effYaw) * sin(effPitch), uy =  cos(effYaw) * sin(effPitch), uz =  cos(effPitch);
+
+                    double relX = FirstController->X - HMDPosX;
+                    double relY = FirstController->Y - HMDPosY;
+                    double relZ = FirstController->Z - (HMDPosZ - CrouchOffsetZ);
+                    rs.initOffsetL[0] = relX*rx + relY*ry + relZ*rz;
+                    rs.initOffsetL[1] = relX*fx + relY*fy + relZ*fz;
+                    rs.initOffsetL[2] = relX*ux + relY*uy + relZ*uz;
+
+                    relX = SecondController->X - HMDPosX;
+                    relY = SecondController->Y - HMDPosY;
+                    relZ = SecondController->Z - (HMDPosZ - CrouchOffsetZ);
+                    rs.initOffsetR[0] = relX*rx + relY*ry + relZ*rz;
+                    rs.initOffsetR[1] = relX*fx + relY*fy + relZ*fz;
+                    rs.initOffsetR[2] = relX*ux + relY*uy + relZ*uz;
+                } else {
+                    rs.initOffsetL[0] = SeqOffsetL[0]; rs.initOffsetL[1] = SeqOffsetL[1]; rs.initOffsetL[2] = SeqOffsetL[2];
+                    rs.initOffsetR[0] = SeqOffsetR[0]; rs.initOffsetR[1] = SeqOffsetR[1]; rs.initOffsetR[2] = SeqOffsetR[2];
+                }
+				rs.initRotL[0] = SeqRotL[0]; rs.initRotL[1] = SeqRotL[1]; rs.initRotL[2] = SeqRotL[2];
+				rs.initRotR[0] = SeqRotR[0]; rs.initRotR[1] = SeqRotR[1]; rs.initRotR[2] = SeqRotR[2];
+				rs.initialized = true;
+			}
+
+			double activeTime = rs.timer - step.delay;
+			double progress = activeTime / step.duration;
+			if (progress > 1.0) progress = 1.0;
+
+			if (step.command == "MOVE") {
+				if (step.target == "L" || step.target == "B") {
+					if (step.axis == "X") SeqOffsetL[0] = rs.initOffsetL[0] + (step.value * progress);
+					if (step.axis == "Y") SeqOffsetL[1] = rs.initOffsetL[1] + (step.value * progress);
+					if (step.axis == "Z") SeqOffsetL[2] = rs.initOffsetL[2] + (step.value * progress);
+				}
+				if (step.target == "R" || step.target == "B") {
+					if (step.axis == "X") SeqOffsetR[0] = rs.initOffsetR[0] + (step.value * progress);
+					if (step.axis == "Y") SeqOffsetR[1] = rs.initOffsetR[1] + (step.value * progress);
+					if (step.axis == "Z") SeqOffsetR[2] = rs.initOffsetR[2] + (step.value * progress);
+				}
+			}
+			else if (step.command == "ROTATE") {
+				if (step.target == "L" || step.target == "B") {
+					if (step.axis == "YAW") SeqRotL[0] = rs.initRotL[0] + (step.value * progress);
+					if (step.axis == "PITCH") SeqRotL[1] = rs.initRotL[1] + (step.value * progress);
+					if (step.axis == "ROLL") SeqRotL[2] = rs.initRotL[2] + (step.value * progress);
+				}
+				if (step.target == "R" || step.target == "B") {
+					if (step.axis == "YAW") SeqRotR[0] = rs.initRotR[0] + (step.value * progress);
+					if (step.axis == "PITCH") SeqRotR[1] = rs.initRotR[1] + (step.value * progress);
+					if (step.axis == "ROLL") SeqRotR[2] = rs.initRotR[2] + (step.value * progress);
+				}
+			}
+			else if (step.command == "RETURN") {
+				SeqOffsetL[0] = rs.initOffsetL[0] + (StartSeqOffsetL[0] - rs.initOffsetL[0]) * progress;
+				SeqOffsetL[1] = rs.initOffsetL[1] + (StartSeqOffsetL[1] - rs.initOffsetL[1]) * progress;
+				SeqOffsetL[2] = rs.initOffsetL[2] + (StartSeqOffsetL[2] - rs.initOffsetL[2]) * progress;
+				SeqRotL[0] = rs.initRotL[0] + (StartSeqRotL[0] - rs.initRotL[0]) * progress;
+				SeqRotL[1] = rs.initRotL[1] + (StartSeqRotL[1] - rs.initRotL[1]) * progress;
+				SeqRotL[2] = rs.initRotL[2] + (StartSeqRotL[2] - rs.initRotL[2]) * progress;
+				SeqOffsetR[0] = rs.initOffsetR[0] + (StartSeqOffsetR[0] - rs.initOffsetR[0]) * progress;
+				SeqOffsetR[1] = rs.initOffsetR[1] + (StartSeqOffsetR[1] - rs.initOffsetR[1]) * progress;
+				SeqOffsetR[2] = rs.initOffsetR[2] + (StartSeqOffsetR[2] - rs.initOffsetR[2]) * progress;
+				SeqRotR[0] = rs.initRotR[0] + (StartSeqRotR[0] - rs.initRotR[0]) * progress;
+				SeqRotR[1] = rs.initRotR[1] + (StartSeqRotR[1] - rs.initRotR[1]) * progress;
+				SeqRotR[2] = rs.initRotR[2] + (StartSeqRotR[2] - rs.initRotR[2]) * progress;
+			}
+			else if (step.command == "POSE") {
+				if (step.hasPoseL) {
+					SeqOffsetL[0] = rs.initOffsetL[0] + (step.poseL[0] - rs.initOffsetL[0]) * progress;
+					SeqOffsetL[1] = rs.initOffsetL[1] + (step.poseL[1] - rs.initOffsetL[1]) * progress;
+					SeqOffsetL[2] = rs.initOffsetL[2] + (step.poseL[2] - rs.initOffsetL[2]) * progress;
+					if (!step.ignoreRot) { // <--- ADD THIS CHECK
+						SeqRotL[0] = rs.initRotL[0] + (step.poseL[3] - rs.initRotL[0]) * progress;
+						SeqRotL[1] = rs.initRotL[1] + (step.poseL[4] - rs.initRotL[1]) * progress;
+						SeqRotL[2] = rs.initRotL[2] + (step.poseL[5] - rs.initRotL[2]) * progress;
+					}
+				}
+				if (step.hasPoseR) {
+					SeqOffsetR[0] = rs.initOffsetR[0] + (step.poseR[0] - rs.initOffsetR[0]) * progress;
+					SeqOffsetR[1] = rs.initOffsetR[1] + (step.poseR[1] - rs.initOffsetR[1]) * progress;
+					SeqOffsetR[2] = rs.initOffsetR[2] + (step.poseR[2] - rs.initOffsetR[2]) * progress;
+					if (!step.ignoreRot) { // <--- ADD THIS CHECK
+						SeqRotR[0] = rs.initRotR[0] + (step.poseR[3] - rs.initRotR[0]) * progress;
+						SeqRotR[1] = rs.initRotR[1] + (step.poseR[4] - rs.initRotR[1]) * progress;
+						SeqRotR[2] = rs.initRotR[2] + (step.poseR[5] - rs.initRotR[2]) * progress;
+					}
+				}
+			}
+			else if (step.command == "SHAKE") {
+				int axisIdx = 0;
+				if (step.axis == "X") axisIdx = 0;
+				else if (step.axis == "Y") axisIdx = 1;
+				else if (step.axis == "Z") axisIdx = 2;
+
+				if (step.target == "L" || step.target == "B") {
+					ShakeTimerL = step.duration;
+					ShakeIntensityL[axisIdx] = step.value;
+				}
+				if (step.target == "R" || step.target == "B") {
+					ShakeTimerR = step.duration;
+					ShakeIntensityR[axisIdx] = step.value;
+				}
+			}
+			else if (step.command == "BUTTON") {
+				double btnState = step.value;
+				if (step.target == "L" || step.target == "B") {
+					if (step.axis == "GRIP") SeqGripL = btnState;
+					else if (step.axis == "TRIG") SeqTrigL = btnState;
+					else if (step.axis == "MENU") SeqMenuL = btnState;
+					else if (step.axis == "SYSTEM") SeqSysL = btnState;
+					else if (step.axis == "TRACKPAD_C") SeqTrackpadCL = btnState;
+					else if (step.axis == "TRACKPAD_R") SeqTrackpadRL = btnState;
+					else if (step.axis == "TRACKPAD_L") SeqTrackpadLL = btnState;
+					else if (step.axis == "TRACKPAD_U") SeqTrackpadUL = btnState;
+					else if (step.axis == "TRACKPAD_D") SeqTrackpadDL = btnState;
+					else if (step.axis == "BTN_A") SeqBtnAL = btnState;
+					else if (step.axis == "BTN_B") SeqBtnBL = btnState;
+				}
+				if (step.target == "R" || step.target == "B") {
+					if (step.axis == "GRIP") SeqGripR = btnState;
+					else if (step.axis == "TRIG") SeqTrigR = btnState;
+					else if (step.axis == "MENU") SeqMenuR = btnState;
+					else if (step.axis == "SYSTEM") SeqSysR = btnState;
+					else if (step.axis == "TRACKPAD_C") SeqTrackpadCR = btnState;
+					else if (step.axis == "TRACKPAD_R") SeqTrackpadRR = btnState;
+					else if (step.axis == "TRACKPAD_L") SeqTrackpadLR = btnState;
+					else if (step.axis == "TRACKPAD_U") SeqTrackpadUR = btnState;
+					else if (step.axis == "TRACKPAD_D") SeqTrackpadDR = btnState;
+					else if (step.axis == "BTN_A") SeqBtnAR = btnState;
+					else if (step.axis == "BTN_B") SeqBtnBR = btnState;
+				}
+			}
 		}
 
-		StepTimer += dt; 
+		RunningSteps.erase(std::remove_if(RunningSteps.begin(), RunningSteps.end(),
+			[&](const ActiveStep& rs) {
+				return rs.timer >= (ActiveSequence[rs.index].delay + ActiveSequence[rs.index].duration);
+			}), RunningSteps.end());
 
-		double progress = StepTimer / step.duration;
-		if (progress > 1.0) progress = 1.0;
-
-		if (step.command == "MOVE") {
-			if (step.target == "L" || step.target == "B") {
-				if (step.axis == "X") SeqOffsetL[0] = StepInitialOffsetL[0] + (step.value * progress);
-				if (step.axis == "Y") SeqOffsetL[1] = StepInitialOffsetL[1] + (step.value * progress);
-				if (step.axis == "Z") SeqOffsetL[2] = StepInitialOffsetL[2] + (step.value * progress);
-			}
-			if (step.target == "R" || step.target == "B") {
-				if (step.axis == "X") SeqOffsetR[0] = StepInitialOffsetR[0] + (step.value * progress);
-				if (step.axis == "Y") SeqOffsetR[1] = StepInitialOffsetR[1] + (step.value * progress);
-				if (step.axis == "Z") SeqOffsetR[2] = StepInitialOffsetR[2] + (step.value * progress);
-			}
-		}
-		else if (step.command == "ROTATE") {
-			if (step.target == "L" || step.target == "B") {
-				if (step.axis == "YAW") SeqRotL[0] = StepInitialRotL[0] + (step.value * progress);
-				if (step.axis == "PITCH") SeqRotL[1] = StepInitialRotL[1] + (step.value * progress);
-				if (step.axis == "ROLL") SeqRotL[2] = StepInitialRotL[2] + (step.value * progress);
-			}
-			if (step.target == "R" || step.target == "B") {
-				if (step.axis == "YAW") SeqRotR[0] = StepInitialRotR[0] + (step.value * progress);
-				if (step.axis == "PITCH") SeqRotR[1] = StepInitialRotR[1] + (step.value * progress);
-				if (step.axis == "ROLL") SeqRotR[2] = StepInitialRotR[2] + (step.value * progress);
-			}
-		}
-		else if (step.command == "RETURN") {
-			SeqOffsetL[0] = StepInitialOffsetL[0] + (StartSeqOffsetL[0] - StepInitialOffsetL[0]) * progress;
-			SeqOffsetL[1] = StepInitialOffsetL[1] + (StartSeqOffsetL[1] - StepInitialOffsetL[1]) * progress;
-			SeqOffsetL[2] = StepInitialOffsetL[2] + (StartSeqOffsetL[2] - StepInitialOffsetL[2]) * progress;
-			SeqRotL[0] = StepInitialRotL[0] + (StartSeqRotL[0] - StepInitialRotL[0]) * progress;
-			SeqRotL[1] = StepInitialRotL[1] + (StartSeqRotL[1] - StepInitialRotL[1]) * progress;
-			SeqRotL[2] = StepInitialRotL[2] + (StartSeqRotL[2] - StepInitialRotL[2]) * progress;
-
-			SeqOffsetR[0] = StepInitialOffsetR[0] + (StartSeqOffsetR[0] - StepInitialOffsetR[0]) * progress;
-			SeqOffsetR[1] = StepInitialOffsetR[1] + (StartSeqOffsetR[1] - StepInitialOffsetR[1]) * progress;
-			SeqOffsetR[2] = StepInitialOffsetR[2] + (StartSeqOffsetR[2] - StepInitialOffsetR[2]) * progress;
-			SeqRotR[0] = StepInitialRotR[0] + (StartSeqRotR[0] - StepInitialRotR[0]) * progress;
-			SeqRotR[1] = StepInitialRotR[1] + (StartSeqRotR[1] - StepInitialRotR[1]) * progress;
-			SeqRotR[2] = StepInitialRotR[2] + (StartSeqRotR[2] - StepInitialRotR[2]) * progress;
-		}
-		else if (step.command == "BUTTON") {
-			int btnState = step.value > 0.0 ? 1 : 0;
-			if (step.target == "L" || step.target == "B") {
-				if (step.axis == "GRIP") SeqGripL = btnState;
-				else if (step.axis == "TRIG") SeqTrigL = btnState;
-				else if (step.axis == "MENU") SeqMenuL = btnState;
-				else if (step.axis == "SYSTEM") SeqSysL = btnState;
-				else if (step.axis == "TRACKPAD_C") SeqTrackpadCL = btnState;
-				else if (step.axis == "TRACKPAD_R") SeqTrackpadRL = btnState;
-				else if (step.axis == "TRACKPAD_L") SeqTrackpadLL = btnState;
-				else if (step.axis == "TRACKPAD_U") SeqTrackpadUL = btnState;
-				else if (step.axis == "TRACKPAD_D") SeqTrackpadDL = btnState;
-				else if (step.axis == "BTN_A") SeqBtnAL = btnState;
-				else if (step.axis == "BTN_B") SeqBtnBL = btnState;
-			}
-			if (step.target == "R" || step.target == "B") {
-				if (step.axis == "GRIP") SeqGripR = btnState;
-				else if (step.axis == "TRIG") SeqTrigR = btnState;
-				else if (step.axis == "MENU") SeqMenuR = btnState;
-				else if (step.axis == "SYSTEM") SeqSysR = btnState;
-				else if (step.axis == "TRACKPAD_C") SeqTrackpadCR = btnState;
-				else if (step.axis == "TRACKPAD_R") SeqTrackpadRR = btnState;
-				else if (step.axis == "TRACKPAD_L") SeqTrackpadLR = btnState;
-				else if (step.axis == "TRACKPAD_U") SeqTrackpadUR = btnState;
-				else if (step.axis == "TRACKPAD_D") SeqTrackpadDR = btnState;
-				else if (step.axis == "BTN_A") SeqBtnAR = btnState;
-				else if (step.axis == "BTN_B") SeqBtnBR = btnState;
+		if (RunningSteps.empty() && NextStepIndex < ActiveSequence.size()) {
+			RunningSteps.push_back({ NextStepIndex, 0.0 });
+			NextStepIndex++;
+			while (NextStepIndex < ActiveSequence.size() && ActiveSequence[NextStepIndex].isParallel) {
+				RunningSteps.push_back({ NextStepIndex, 0.0 });
+				NextStepIndex++;
 			}
 		}
 
-		if (StepTimer >= step.duration) {
-			StepTimer = 0.0;
-			CurrentStepIndex++;
-			
-			if (CurrentStepIndex >= ActiveSequence.size()) {
-				CurrentStepIndex = -1; 
-				
+		if (RunningSteps.empty() && NextStepIndex >= ActiveSequence.size()) {
+			if (g_GestureLoop) {
+				NextStepIndex = 0;
+				RunningSteps.push_back({ NextStepIndex, 0.0 });
+				NextStepIndex++;
+				while (NextStepIndex < ActiveSequence.size() && ActiveSequence[NextStepIndex].isParallel) {
+					RunningSteps.push_back({ NextStepIndex, 0.0 });
+					NextStepIndex++;
+				}
+			} else {
+				NextStepIndex = 0;
+				ActiveSequence.clear();
+				g_ActiveGestureKey = 0;
 				SeqGripL = SeqGripR = SeqTrigL = SeqTrigR = -1;
 				SeqMenuL = SeqMenuR = SeqSysL = SeqSysR = -1;
 				SeqTrackpadCL = SeqTrackpadCR = SeqTrackpadUL = SeqTrackpadUR = -1;
@@ -1029,64 +1731,121 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 	if (!FPSModeActive) {
 		double gestMoveX_L = SeqOffsetL[0] * cos(yawRad) + SeqOffsetL[1] * sin(yawRad);
 		double gestMoveY_L = -SeqOffsetL[0] * sin(yawRad) + SeqOffsetL[1] * cos(yawRad);
-		FirstController->X += gestMoveX_L; 
-		FirstController->Y += gestMoveY_L; 
+		FirstController->X += gestMoveX_L;
+		FirstController->Y += gestMoveY_L;
 		FirstController->Z += SeqOffsetL[2];
 
 		double gestMoveX_R = SeqOffsetR[0] * cos(yawRad) + SeqOffsetR[1] * sin(yawRad);
 		double gestMoveY_R = -SeqOffsetR[0] * sin(yawRad) + SeqOffsetR[1] * cos(yawRad);
-		SecondController->X += gestMoveX_R; 
-		SecondController->Y += gestMoveY_R; 
+		SecondController->X += gestMoveX_R;
+		SecondController->Y += gestMoveY_R;
 		SecondController->Z += SeqOffsetR[2];
 	}
 
-	if (SeqGripL == 1) FirstController->Buttons |= GRIP_BTN;
-	else if (SeqGripL == 0) FirstController->Buttons &= ~GRIP_BTN;
-	if (SeqTrigL == 1) FirstController->Trigger = 1.0f;
-	else if (SeqTrigL == 0) FirstController->Trigger = 0.0f;
-	if (SeqMenuL == 1) FirstController->Buttons |= MENU_BTN;
-	else if (SeqMenuL == 0) FirstController->Buttons &= ~MENU_BTN;
-	if (SeqSysL == 1) FirstController->Buttons |= SYS_BTN;
-	else if (SeqSysL == 0) FirstController->Buttons &= ~SYS_BTN;
-	if (SeqBtnAL == 1) FirstController->ButtonA = true;
-	else if (SeqBtnAL == 0) FirstController->ButtonA = false;
-	if (SeqBtnBL == 1) FirstController->ButtonB = true;
-	else if (SeqBtnBL == 0) FirstController->ButtonB = false;
+    // --- GLOBAL HMD-RELATIVE OVERRIDE ---
+    bool activePoseL = false;
+    bool activePoseR = false;
 
-	if (SeqTrackpadCL == 1) FirstController->Buttons |= THUMB_BTN;
-	else if (SeqTrackpadCL == 0 && SeqTrackpadUL != 1 && SeqTrackpadDL != 1 && SeqTrackpadLL != 1 && SeqTrackpadRL != 1) FirstController->Buttons &= ~THUMB_BTN;
-	if (SeqTrackpadUL == 1) { FirstController->AxisY = 1; FirstController->Buttons |= THUMB_BTN; }
-	else if (SeqTrackpadUL == 0 && SeqTrackpadDL != 1) FirstController->AxisY = 0;
-	if (SeqTrackpadDL == 1) { FirstController->AxisY = -1; FirstController->Buttons |= THUMB_BTN; }
-	else if (SeqTrackpadDL == 0 && SeqTrackpadUL != 1) FirstController->AxisY = 0;
-	if (SeqTrackpadRL == 1) { FirstController->AxisX = 1; FirstController->Buttons |= THUMB_BTN; }
-	else if (SeqTrackpadRL == 0 && SeqTrackpadLL != 1) FirstController->AxisX = 0;
-	if (SeqTrackpadLL == 1) { FirstController->AxisX = -1; FirstController->Buttons |= THUMB_BTN; }
-	else if (SeqTrackpadLL == 0 && SeqTrackpadRL != 1) FirstController->AxisX = 0;
+    for (const auto& rs : RunningSteps) {
+        if (ActiveSequence[rs.index].command == "POSE") {
+            if (ActiveSequence[rs.index].hasPoseL) activePoseL = true;
+            if (ActiveSequence[rs.index].hasPoseR) activePoseR = true;
+        }
+    }
 
-	if (SeqGripR == 1) SecondController->Buttons |= GRIP_BTN;
-	else if (SeqGripR == 0) SecondController->Buttons &= ~GRIP_BTN;
-	if (SeqTrigR == 1) SecondController->Trigger = 1.0f;
-	else if (SeqTrigR == 0) SecondController->Trigger = 0.0f;
-	if (SeqMenuR == 1) SecondController->Buttons |= MENU_BTN;
-	else if (SeqMenuR == 0) SecondController->Buttons &= ~MENU_BTN;
-	if (SeqSysR == 1) SecondController->Buttons |= SYS_BTN;
-	else if (SeqSysR == 0) SecondController->Buttons &= ~SYS_BTN;
-	if (SeqBtnAR == 1) SecondController->ButtonA = true;
-	else if (SeqBtnAR == 0) SecondController->ButtonA = false;
-	if (SeqBtnBR == 1) SecondController->ButtonB = true;
-	else if (SeqBtnBR == 0) SecondController->ButtonB = false;
+    if (activePoseL || activePoseR) {
+        double effYaw = DegToRad(cameraHMD.Yaw);
+        double effPitch = DegToRad(cameraHMD.Pitch);
+        
+        double rx =  cos(effYaw);
+        double ry = -sin(effYaw);
+        double rz =  0;
+        
+        double fx = -sin(effYaw) * cos(effPitch);
+        double fy = -cos(effYaw) * cos(effPitch);
+        double fz =  sin(effPitch);
+        
+        double ux =  sin(effYaw) * sin(effPitch);
+        double uy =  cos(effYaw) * sin(effPitch);
+        double uz =  cos(effPitch);
 
-	if (SeqTrackpadCR == 1) SecondController->Buttons |= THUMB_BTN;
-	else if (SeqTrackpadCR == 0 && SeqTrackpadUR != 1 && SeqTrackpadDR != 1 && SeqTrackpadLR != 1 && SeqTrackpadRR != 1) SecondController->Buttons &= ~THUMB_BTN;
-	if (SeqTrackpadUR == 1) { SecondController->AxisY = 1; SecondController->Buttons |= THUMB_BTN; }
-	else if (SeqTrackpadUR == 0 && SeqTrackpadDR != 1) SecondController->AxisY = 0;
-	if (SeqTrackpadDR == 1) { SecondController->AxisY = -1; SecondController->Buttons |= THUMB_BTN; }
-	else if (SeqTrackpadDR == 0 && SeqTrackpadUR != 1) SecondController->AxisY = 0;
-	if (SeqTrackpadRR == 1) { SecondController->AxisX = 1; SecondController->Buttons |= THUMB_BTN; }
-	else if (SeqTrackpadRR == 0 && SeqTrackpadLR != 1) SecondController->AxisX = 0;
-	if (SeqTrackpadLR == 1) { SecondController->AxisX = -1; SecondController->Buttons |= THUMB_BTN; }
-	else if (SeqTrackpadLR == 0 && SeqTrackpadRR != 1) SecondController->AxisX = 0;
+        if (activePoseL) {
+            FirstController->X = HMDPosX + rx*SeqOffsetL[0] + fx*SeqOffsetL[1] + ux*SeqOffsetL[2];
+            FirstController->Y = HMDPosY + ry*SeqOffsetL[0] + fy*SeqOffsetL[1] + uy*SeqOffsetL[2];
+            FirstController->Z = (HMDPosZ - CrouchOffsetZ) + rz*SeqOffsetL[0] + fz*SeqOffsetL[1] + uz*SeqOffsetL[2];
+        }
+        if (activePoseR) {
+            SecondController->X = HMDPosX + rx*SeqOffsetR[0] + fx*SeqOffsetR[1] + ux*SeqOffsetR[2];
+            SecondController->Y = HMDPosY + ry*SeqOffsetR[0] + fy*SeqOffsetR[1] + uy*SeqOffsetR[2];
+            SecondController->Z = (HMDPosZ - CrouchOffsetZ) + rz*SeqOffsetR[0] + fz*SeqOffsetR[1] + uz*SeqOffsetR[2];
+        }
+    } else if (!FPSModeActive) {
+        // Standard 2D Yaw-relative positioning ONLY runs if no Pose is active
+        double gestMoveX_L = SeqOffsetL[0] * cos(yawRad) + SeqOffsetL[1] * sin(yawRad);
+        double gestMoveY_L = -SeqOffsetL[0] * sin(yawRad) + SeqOffsetL[1] * cos(yawRad);
+        FirstController->X += gestMoveX_L;
+        FirstController->Y += gestMoveY_L;
+        FirstController->Z += SeqOffsetL[2];
+
+        double gestMoveX_R = SeqOffsetR[0] * cos(yawRad) + SeqOffsetR[1] * sin(yawRad);
+        double gestMoveY_R = -SeqOffsetR[0] * sin(yawRad) + SeqOffsetR[1] * cos(yawRad);
+        SecondController->X += gestMoveX_R;
+        SecondController->Y += gestMoveY_R;
+        SecondController->Z += SeqOffsetR[2];
+    }
+    // --- END GLOBAL HMD-RELATIVE OVERRIDE ---
+
+	if (SeqGripL >= 0.0) {
+		if (SeqGripL >= 0.5) FirstController->Buttons |= GRIP_BTN;
+		else FirstController->Buttons &= ~GRIP_BTN;
+		FirstController->GripValue = (float)SeqGripL;
+	}
+	if (SeqGripR >= 0.0) {
+		if (SeqGripR >= 0.5) SecondController->Buttons |= GRIP_BTN;
+		else SecondController->Buttons &= ~GRIP_BTN;
+		SecondController->GripValue = (float)SeqGripR;
+	}
+
+	if (SeqTrigL >= 0.0) FirstController->Trigger = (float)SeqTrigL;
+	if (SeqTrigR >= 0.0) SecondController->Trigger = (float)SeqTrigR;
+
+	if (SeqMenuL >= 0.0) { if (SeqMenuL >= 0.5) FirstController->Buttons |= MENU_BTN; else FirstController->Buttons &= ~MENU_BTN; }
+	if (SeqSysL >= 0.0) { if (SeqSysL >= 0.5) FirstController->Buttons |= SYS_BTN; else FirstController->Buttons &= ~SYS_BTN; }
+	if (SeqMenuR >= 0.0) { if (SeqMenuR >= 0.5) SecondController->Buttons |= MENU_BTN; else SecondController->Buttons &= ~MENU_BTN; }
+	if (SeqSysR >= 0.0) { if (SeqSysR >= 0.5) SecondController->Buttons |= SYS_BTN; else SecondController->Buttons &= ~SYS_BTN; }
+
+	if (SeqBtnAL >= 0.0) FirstController->ButtonA = (SeqBtnAL >= 0.5);
+	if (SeqBtnBL >= 0.0) FirstController->ButtonB = (SeqBtnBL >= 0.5);
+	if (SeqBtnAR >= 0.0) SecondController->ButtonA = (SeqBtnAR >= 0.5);
+	if (SeqBtnBR >= 0.0) SecondController->ButtonB = (SeqBtnBR >= 0.5);
+
+	if (SeqTrackpadUL >= 0.0 || SeqTrackpadDL >= 0.0) {
+		float yVal = 0.0f;
+		if (SeqTrackpadUL >= 0.0) yVal += (float)SeqTrackpadUL;
+		if (SeqTrackpadDL >= 0.0) yVal -= (float)SeqTrackpadDL;
+		FirstController->AxisY = yVal;
+	}
+	if (SeqTrackpadRL >= 0.0 || SeqTrackpadLL >= 0.0) {
+		float xVal = 0.0f;
+		if (SeqTrackpadRL >= 0.0) xVal += (float)SeqTrackpadRL;
+		if (SeqTrackpadLL >= 0.0) xVal -= (float)SeqTrackpadLL;
+		FirstController->AxisX = xVal;
+	}
+	if (SeqTrackpadUR >= 0.0 || SeqTrackpadDR >= 0.0) {
+		float yVal = 0.0f;
+		if (SeqTrackpadUR >= 0.0) yVal += (float)SeqTrackpadUR;
+		if (SeqTrackpadDR >= 0.0) yVal -= (float)SeqTrackpadDR;
+		SecondController->AxisY = yVal;
+	}
+	if (SeqTrackpadRR >= 0.0 || SeqTrackpadLR >= 0.0) {
+		float xVal = 0.0f;
+		if (SeqTrackpadRR >= 0.0) xVal += (float)SeqTrackpadRR;
+		if (SeqTrackpadLR >= 0.0) xVal -= (float)SeqTrackpadLR;
+		SecondController->AxisX = xVal;
+	}
+
+	if (SeqTrackpadCL >= 0.0) { if (SeqTrackpadCL >= 0.5) FirstController->Buttons |= THUMB_BTN; else if (SeqTrackpadUL < 0.5 && SeqTrackpadDL < 0.5 && SeqTrackpadLL < 0.5 && SeqTrackpadRL < 0.5) FirstController->Buttons &= ~THUMB_BTN; }
+	if (SeqTrackpadCR >= 0.0) { if (SeqTrackpadCR >= 0.5) SecondController->Buttons |= THUMB_BTN; else if (SeqTrackpadUR < 0.5 && SeqTrackpadDR < 0.5 && SeqTrackpadLR < 0.5 && SeqTrackpadRR < 0.5) SecondController->Buttons &= ~THUMB_BTN; }
 
 	if (LeftHandLocked) {
 		FirstController->X = LockedLeftPos[0];
@@ -1096,6 +1855,8 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 			FirstController->Yaw = LockedLeftYaw;
 			FirstController->Pitch = LockedLeftPitch;
 			FirstController->Roll = LockedLeftRoll;
+			FirstController->UseQuat = LockedLeftUseQuat;
+			FirstController->QW = LockedLeftQ[0]; FirstController->QX = LockedLeftQ[1]; FirstController->QY = LockedLeftQ[2]; FirstController->QZ = LockedLeftQ[3];
 		}
 	}
 	if (RightHandLocked) {
@@ -1106,10 +1867,13 @@ void GetControllersData(__out TController* FirstController, __out TController* S
 			SecondController->Yaw = LockedRightYaw;
 			SecondController->Pitch = LockedRightPitch;
 			SecondController->Roll = LockedRightRoll;
+			SecondController->UseQuat = LockedRightUseQuat;
+			SecondController->QW = LockedRightQ[0]; SecondController->QX = LockedRightQ[1]; SecondController->QY = LockedRightQ[2]; SecondController->QZ = LockedRightQ[3];
 		}
 	}
 }
 
+// --- INI CONFIGURATION LOADER ---
 void LoadConfig() {
     if (g_IniPathStr.empty()) return;
     CIniReader IniFile((char*)g_IniPathStr.c_str());
@@ -1118,7 +1882,7 @@ void LoadConfig() {
     HMDConnected = IniFile.ReadBoolean("Main", "HMD", true);
     VRMode = IniFile.ReadBoolean("Main", "VRMode", false);
     VRAimingAngleOffset = IniFile.ReadFloat("Main", "VRAimingAngleOffset", 0);
-    
+
     ScrollPushPullSpeed = IniFile.ReadFloat("Main", "ScrollPushPullSpeed", 0.0005f);
     HandMoveSensitivity = IniFile.ReadFloat("Main", "HandMoveSensitivity", 0.5f);
     RotationSpeed = IniFile.ReadFloat("Main", "RotationSpeed", 0.05f);
@@ -1128,7 +1892,10 @@ void LoadConfig() {
     ZPosSensetive = IniFile.ReadFloat("Main", "AxisZ", 0.009f);
     HandCenterOffsetX = IniFile.ReadFloat("Main", "HandCenterOffsetX", 0.1f);
 	PositionSmoothness = IniFile.ReadFloat("Main", "PositionSmoothness", 0.15f);
-	
+	NeckModelEnabled = IniFile.ReadBoolean("Main", "NeckModel", true);
+    TrackpadHalf = IniFile.ReadFloat("Main", "TrackpadHalf", 0.5f);
+    TrackpadFull = IniFile.ReadFloat("Main", "TrackpadFull", 1.0f);
+
     FPS_HandCenterOffsetX = IniFile.ReadFloat("FPS_Mode", "FPS_HandCenterOffsetX", 0.0f);
     FPS_HandCenterOffsetZ = IniFile.ReadFloat("FPS_Mode", "FPS_HandCenterOffsetZ", 0.0f);
     FPS_GunOffsetX = IniFile.ReadFloat("FPS_Mode", "GunOffsetX", 0.0f);
@@ -1144,9 +1911,12 @@ void LoadConfig() {
     FPS_LeftZeroPitch = IniFile.ReadFloat("FPS_Mode", "LeftZeroPitch", 0.0f);
     FPS_LeftZeroRoll = IniFile.ReadFloat("FPS_Mode", "LeftZeroRoll", 0.0f);
 
-    AutoSwingHoldMode = IniFile.ReadBoolean("FPS_Mode", "AutoSwingHoldMode", IniFile.ReadBoolean("Main", "AutoSwingHoldMode", true));
+    FPS_YawSign   = IniFile.ReadBoolean("FPS_Mode", "InvertYaw", false)  ? 1.0 : -1.0; // swapped: false = the "good" yaw, true = flipped
+    FPS_PitchSign = IniFile.ReadBoolean("FPS_Mode", "InvertPitch", true) ? -1.0 : 1.0;
+    PumpDuration = IniFile.ReadFloat("FPS_Mode", "PumpDuration", 0.35f);
+    PumpDistance = IniFile.ReadFloat("FPS_Mode", "PumpDistance", 0.15f);
 
-    g_DriverKeys.clear(); 
+    bool tmp[256] = {};
     std::string swallowStr = IniFile.ReadString("SwallowKeys", "Keys", "");
     std::stringstream ss(swallowStr);
     std::string token;
@@ -1154,9 +1924,32 @@ void LoadConfig() {
         token.erase(std::remove_if(token.begin(), token.end(), ::isspace), token.end());
         if (!token.empty()) {
             int code = KeyNameToKeyCode(token);
-            if (code != 0) g_DriverKeys.push_back(code);
+            if (code > 0 && code < 256) tmp[code] = true;
         }
     }
+
+    // --- KEY REMAPPER ---
+    g_KeyRemapper.clear();
+    char remapBuffer[4096] = {0};
+    GetPrivateProfileSectionA("KeyRemapper", remapBuffer, sizeof(remapBuffer), g_IniPathStr.c_str());
+    char* p = remapBuffer;
+    while (*p) {
+        std::string line(p);
+        size_t eq = line.find('=');
+        if (eq != std::string::npos) {
+            std::string fromStr = line.substr(0, eq);
+            std::string toStr = line.substr(eq + 1);
+            int fromCode = KeyNameToKeyCode(fromStr);
+            int toCode = KeyNameToKeyCode(toStr);
+            if (fromCode > 0 && toCode > 0) {
+                g_KeyRemapper[fromCode] = toCode;
+            }
+        }
+        p += strlen(p) + 1;
+    }
+
+    for (int i = 0; i < 256; ++i)
+        g_IsDriverKey[i].store(tmp[i], std::memory_order_relaxed);
 
     KEY_ID_LEFT_TRIGGER = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT_TRIGGER", "MOUSE-LEFT-BTN"));
     KEY_ID_LEFT_MENU = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT_MENU", "TAB"));
@@ -1182,7 +1975,8 @@ void LoadConfig() {
     KEY_ID_FPS_MODE_TOGGLE = KeyNameToKeyCode(IniFile.ReadString("Keys", "FPS_MODE_TOGGLE", "J"));
     KEY_ID_AUTO_SWING_TOGGLE = KeyNameToKeyCode(IniFile.ReadString("Keys", "AUTO_SWING_TOGGLE", "SHIFT"));
     KEY_ID_PUMP_ACTION = KeyNameToKeyCode(IniFile.ReadString("Keys", "PUMP_ACTION", "MOUSE-SIDE1-BTN"));
-    
+    KEY_ID_SNIPER_MODE = KeyNameToKeyCode(IniFile.ReadString("Keys", "SNIPER_MODE", "MOUSE-SIDE2-BTN"));
+
     KEY_ID_LEFT_HAND_LOCK = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT_HAND_LOCK", "L"));
     KEY_ID_RIGHT_HAND_LOCK = KeyNameToKeyCode(IniFile.ReadString("Keys", "RIGHT_HAND_LOCK", "SEMICOLON"));
 	KEY_ID_LEFT_TRACKPAD_TOGGLE  = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT_TOUCH_PRESS_TOGGLE",  "["));
@@ -1192,9 +1986,11 @@ void LoadConfig() {
     KEY_ID_HMD_BACK = KeyNameToKeyCode(IniFile.ReadString("Keys", "HMD_BACK", "NUMPAD5"));
     KEY_ID_HMD_LEFT = KeyNameToKeyCode(IniFile.ReadString("Keys", "HMD_LEFT", "NUMPAD4"));
     KEY_ID_HMD_RIGHT = KeyNameToKeyCode(IniFile.ReadString("Keys", "HMD_RIGHT", "NUMPAD6"));
+	KEY_ID_LEAN_LEFT = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEAN_LEFT", "NUMPAD7"));
+    KEY_ID_LEAN_RIGHT = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEAN_RIGHT", "NUMPAD9"));
     KEY_ID_HMD_MOVE_RESET = KeyNameToKeyCode(IniFile.ReadString("Keys", "HMD_MOVE_RESET", "U"));
     KEY_ID_FREELOOK = KeyNameToKeyCode(IniFile.ReadString("Keys", "FREELOOK", "ALT"));
-    
+
     KEY_ID_LEFT_HAND_ROTATE = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT_HAND_ROTATE", "X"));
     KEY_ID_RIGHT_HAND_ROTATE = KeyNameToKeyCode(IniFile.ReadString("Keys", "RIGHT_HAND_ROTATE", "C"));
     KEY_ID_HAND_FORWARD = KeyNameToKeyCode(IniFile.ReadString("Keys", "HAND_FORWARD", "W"));
@@ -1211,6 +2007,7 @@ void LoadConfig() {
     KEY_ID_DOWN = KeyNameToKeyCode(IniFile.ReadString("Keys", "DOWN", "DOWN"));
     KEY_ID_LEFT = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT", "LEFT"));
     KEY_ID_RIGHT = KeyNameToKeyCode(IniFile.ReadString("Keys", "RIGHT", "RIGHT"));
+    KEY_ID_TRACKPAD_DISTANCE = KeyNameToKeyCode(IniFile.ReadString("Keys", "TRACKPAD_DISTANCE_BTN", "Z"));
 
     KEY_ID_LEFT_A = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT_A", "T"));
     KEY_ID_LEFT_B = KeyNameToKeyCode(IniFile.ReadString("Keys", "LEFT_B", "TAB"));
@@ -1223,6 +2020,21 @@ void LoadConfig() {
     KEY_ID_GESTURE_CUSTOM_8 = KeyNameToKeyCode(IniFile.ReadString("Keys", "GESTURE_CUSTOM_8", "8"));
     KEY_ID_GESTURE_CUSTOM_9 = KeyNameToKeyCode(IniFile.ReadString("Keys", "GESTURE_CUSTOM_9", "9"));
     KEY_ID_GESTURE_CUSTOM_0 = KeyNameToKeyCode(IniFile.ReadString("Keys", "GESTURE_CUSTOM_0", "0"));
+    KEY_ID_GESTURE_MINUS = KeyNameToKeyCode(IniFile.ReadString("Keys", "GESTURE_CUSTOM_MINUS", "-"));
+    KEY_ID_GESTURE_EQUALS = KeyNameToKeyCode(IniFile.ReadString("Keys", "GESTURE_CUSTOM_EQUALS", "="));
+    
+    KEY_ID_SAVE_POSE_LEFT = KeyNameToKeyCode(IniFile.ReadString("Keys", "SAVE_POSE_LEFT", "PERIOD"));
+    KEY_ID_SAVE_POSE_RIGHT = KeyNameToKeyCode(IniFile.ReadString("Keys", "SAVE_POSE_RIGHT", "COMMA"));
+    
+    // DIAGNOSTIC LOG:
+    vr::VRDriverLog()->Log(("FlatVR: Config Loaded -> SaveLeft Key: " + std::to_string(KEY_ID_SAVE_POSE_LEFT) + " | SaveRight Key: " + std::to_string(KEY_ID_SAVE_POSE_RIGHT) + "\n").c_str());
+
+    KEY_ID_PROFILE_CYCLE = KeyNameToKeyCode(IniFile.ReadString("Keys", "PROFILE_CYCLE", "F9"));
+    KEY_ID_SHAKE_LEFT_H = KeyNameToKeyCode(IniFile.ReadString("Keys", "SHAKE_LEFT_H", "F1"));
+    KEY_ID_SHAKE_RIGHT_H = KeyNameToKeyCode(IniFile.ReadString("Keys", "SHAKE_RIGHT_H", "F2"));
+    KEY_ID_SHAKE_LEFT_V = KeyNameToKeyCode(IniFile.ReadString("Keys", "SHAKE_LEFT_V", "F3"));
+    KEY_ID_SHAKE_RIGHT_V = KeyNameToKeyCode(IniFile.ReadString("Keys", "SHAKE_RIGHT_V", "F4"));
+    KEY_ID_NECK_MODEL_TOGGLE = KeyNameToKeyCode(IniFile.ReadString("Keys", "NECK_MODEL_TOGGLE", "F10"));
 
     std::string modeStr;
     modeStr = IniFile.ReadString("Modes", "LEFT_TRIGGER_MODE", IniFile.ReadString("Toggles", "LEFT_TRIGGER_MODE", "HOLD")); Btn_LeftTrigger.isToggle = (modeStr == "TOGGLE");
@@ -1248,9 +2060,13 @@ void LoadConfig() {
     modeStr = IniFile.ReadString("Modes", "TELEPORT_MODE", IniFile.ReadString("Toggles", "TELEPORT_MODE", "HOLD")); Btn_Teleport.isToggle = (modeStr == "TOGGLE");
     modeStr = IniFile.ReadString("Modes", "CHANGE_WEAPON_MODE", IniFile.ReadString("Toggles", "CHANGE_WEAPON_MODE", "HOLD")); Btn_ChangeWeapon.isToggle = (modeStr == "TOGGLE");
     modeStr = IniFile.ReadString("Modes", "CROUCH_MODE", IniFile.ReadString("Toggles", "CROUCH_MODE", "TOGGLE")); Btn_Crouch.isToggle = (modeStr == "TOGGLE");
-    modeStr = IniFile.ReadString("Modes", "PRONE_MODE", IniFile.ReadString("Toggles", "PRONE_MODE", "TOGGLE")); Btn_Prone.isToggle = (modeStr == "TOGGLE"); 
+    modeStr = IniFile.ReadString("Modes", "PRONE_MODE", IniFile.ReadString("Toggles", "PRONE_MODE", "TOGGLE")); Btn_Prone.isToggle = (modeStr == "TOGGLE");
+    modeStr = IniFile.ReadString("Modes", "SNIPER_TOGGLE", IniFile.ReadString("Toggles", "SNIPER_TOGGLE", "HOLD")); SniperToggleMode = (modeStr == "TOGGLE");
+    modeStr = IniFile.ReadString("Modes", "AUTO_SWING_TOGGLE", IniFile.ReadString("Toggles", "AUTO_SWING_TOGGLE", "HOLD")); AutoSwingHoldMode = (modeStr == "HOLD");
+    modeStr = IniFile.ReadString("Modes", "TRACKPAD_DISTANCE_MODE", IniFile.ReadString("Toggles", "TRACKPAD_DISTANCE_MODE", "HOLD")); Btn_TrackpadDistance.isToggle = (modeStr == "TOGGLE");
 }
 
+// --- HMD DEVICE DRIVER CLASS ---
 class CSampleDeviceDriver : public vr::ITrackedDeviceServerDriver, public vr::IVRDisplayComponent
 {
 public:
@@ -1288,7 +2104,10 @@ public:
 		vr::VRProperties()->SetBoolProperty(m_ulPropertyContainer, Prop_DeviceIsWireless_Bool, false);
 		vr::VRProperties()->SetBoolProperty(m_ulPropertyContainer, Prop_DeviceIsCharging_Bool, false);
 		vr::VRProperties()->SetBoolProperty(m_ulPropertyContainer, Prop_CanUnifyCoordinateSystemWithHmd_Bool, true);
-		vr::VRProperties()->SetBoolProperty(m_ulPropertyContainer, Prop_ContainsProximitySensor_Bool, false);
+		
+		// Ensure SteamVR knows this device has a proximity sensor
+		vr::VRProperties()->SetBoolProperty(m_ulPropertyContainer, Prop_ContainsProximitySensor_Bool, true);
+		
 		vr::VRProperties()->SetBoolProperty(m_ulPropertyContainer, Prop_DeviceCanPowerOff_Bool, false);
 		vr::VRProperties()->SetInt32Property(m_ulPropertyContainer, vr::Prop_DeviceClass_Int32, vr::TrackedDeviceClass_HMD);
 		vr::VRProperties()->SetBoolProperty(m_ulPropertyContainer, vr::Prop_HasCamera_Bool, false);
@@ -1305,6 +2124,11 @@ public:
 			vr::VRProperties()->SetStringProperty(m_ulPropertyContainer, Prop_RegisteredDeviceType_String, "HMD");
 			vr::VRProperties()->SetStringProperty(m_ulPropertyContainer, Prop_RenderModelName_String, m_sModelNumber.c_str());
 		}
+
+		// Create the dummy proximity sensor and force it to true
+		vr::VRDriverInput()->CreateBooleanComponent(m_ulPropertyContainer, "/proximity", &m_proximitySensorHandle);
+		vr::VRDriverInput()->UpdateBooleanComponent(m_proximitySensorHandle, true, 0.0);
+
 		return VRInitError_None;
 	}
 	virtual void Deactivate() { HMDIndex_t = vr::k_unTrackedDeviceIndexInvalid; }
@@ -1315,25 +2139,25 @@ public:
 	virtual void GetWindowBounds(int32_t* pnX, int32_t* pnY, uint32_t* pnWidth, uint32_t* pnHeight) { *pnX = m_nWindowX; *pnY = m_nWindowY; *pnWidth = m_nWindowWidth; *pnHeight = m_nWindowHeight; }
 	virtual bool IsDisplayOnDesktop() { return true; } virtual bool IsDisplayRealDisplay() { return true; }
 	virtual void GetRecommendedRenderTargetSize(uint32_t* pnWidth, uint32_t* pnHeight) { *pnWidth = m_nRenderWidth; *pnHeight = m_nRenderHeight; }
-	
+
 	virtual void GetEyeOutputViewport(EVREye eEye, uint32_t* pnX, uint32_t* pnY, uint32_t* pnWidth, uint32_t* pnHeight) {
 		if (m_bStereoMode) {
-			*pnY = 0; 
-			*pnWidth = m_nWindowWidth / 2; 
+			*pnY = 0;
+			*pnWidth = m_nWindowWidth / 2;
 			*pnHeight = m_nWindowHeight;
 			if (eEye == Eye_Left) *pnX = 0;
 			else *pnX = (m_nWindowWidth / 2);
 		}
 		else {
-			*pnY = 0; 
-			*pnWidth = m_nWindowWidth; 
+			*pnY = 0;
+			*pnWidth = m_nWindowWidth;
 			*pnHeight = m_nWindowHeight;
-			
+
 			if (eEye == Eye_Left) *pnX = 0;
-			else *pnX = m_nWindowWidth; 
+			else *pnX = m_nWindowWidth;
 		}
 	}
-	
+
 	virtual void GetProjectionRaw(EVREye eEye, float* pfLeft, float* pfRight, float* pfTop, float* pfBottom) {
 		if (m_bStereoMode) { *pfLeft = -m_fFOV; *pfRight = m_fFOV; *pfTop = -m_fFOV; *pfBottom = m_fFOV; }
 		else { *pfLeft = (float)m_nRenderWidth / m_nRenderHeight * -1; *pfRight = (float)m_nRenderWidth / m_nRenderHeight; *pfTop = -1.0; *pfBottom = 1.0; }
@@ -1349,9 +2173,9 @@ public:
 		DriverPose_t pose = { 0 }; if (HMDConnected) { pose.poseIsValid = true; pose.result = TrackingResult_Running_OK; pose.deviceIsConnected = true; }
 		else { pose.poseIsValid = false; pose.result = TrackingResult_Uninitialized; pose.deviceIsConnected = false; }
 		pose.qWorldFromDriverRotation = HmdQuaternion_Init(1, 0, 0, 0); pose.qDriverFromHeadRotation = HmdQuaternion_Init(1, 0, 0, 0);
-		if (HMDConnected) { 
-			GetHMDData(&MyHMD); 
-			pose.qRotation = EulerAngleToQuaternion(DegToRad(-MyHMD.Yaw), DegToRad(-MyHMD.Pitch), DegToRad(MyHMD.Roll)); 
+		if (HMDConnected) {
+			GetHMDData(&MyHMD);
+			
 			if (!SmoothHMD_Init) {
 				SmoothHMD_X = MyHMD.X; SmoothHMD_Y = MyHMD.Z; SmoothHMD_Z = MyHMD.Y;
 				SmoothHMD_Init = true;
@@ -1359,45 +2183,49 @@ public:
 			SmoothHMD_X += (MyHMD.X - SmoothHMD_X) * PositionSmoothness;
 			SmoothHMD_Y += (MyHMD.Z - SmoothHMD_Y) * PositionSmoothness;
 			SmoothHMD_Z += (MyHMD.Y - SmoothHMD_Z) * PositionSmoothness;
-			// Snap-to-target: kill the asymptotic EMA tail.
 			if (std::abs(MyHMD.X - SmoothHMD_X) < 0.0001) SmoothHMD_X = MyHMD.X;
 			if (std::abs(MyHMD.Z - SmoothHMD_Y) < 0.0001) SmoothHMD_Y = MyHMD.Z;
 			if (std::abs(MyHMD.Y - SmoothHMD_Z) < 0.0001) SmoothHMD_Z = MyHMD.Y;
+
 			pose.vecPosition[0] = SmoothHMD_X;
 			pose.vecPosition[1] = SmoothHMD_Y;
 			pose.vecPosition[2] = SmoothHMD_Z;
 			
-			double dt = max((int)deltaTime.count(), 1) / 1000.0;
+			pose.qRotation = EulerAngleToQuaternion(DegToRad(-MyHMD.Yaw), DegToRad(-MyHMD.Pitch), DegToRad(MyHMD.Roll));
+
+			double dt = g_DtSeconds;
 			double dYaw = cameraHMD.Yaw - LastHmdYaw;
 			double dPitch = cameraHMD.Pitch - LastHmdPitch;
 			if (dYaw > 180) dYaw -= 360; if (dYaw < -180) dYaw += 360;
 			if (dPitch > 180) dPitch -= 360; if (dPitch < -180) dPitch += 360;
-			
+
 			double targetOmegaX = DegToRad(dPitch) / dt;
 			double targetOmegaY = DegToRad(dYaw) / dt;
-			
+
 			HmdOmegaX = (HmdOmegaX * 0.85) + (targetOmegaX * 0.15);
 			HmdOmegaY = (HmdOmegaY * 0.85) + (targetOmegaY * 0.15);
-			
+
 			LastHmdYaw = cameraHMD.Yaw;
 			LastHmdPitch = cameraHMD.Pitch;
 
 			pose.vecVelocity[0] = 0; pose.vecVelocity[1] = 0; pose.vecVelocity[2] = 0;
 			pose.vecAngularVelocity[0] = HmdOmegaX; pose.vecAngularVelocity[1] = HmdOmegaY; pose.vecAngularVelocity[2] = 0;
 		}
-		pose.shouldApplyHeadModel = !FPSModeActive;
+		pose.shouldApplyHeadModel = NeckModelEnabled && !FPSModeActive;
 		pose.poseTimeOffset = 0; pose.willDriftInYaw = false; return pose;
 	}
 	void RunFrame() { if (HMDIndex_t != vr::k_unTrackedDeviceIndexInvalid) vr::VRServerDriverHost()->TrackedDevicePoseUpdated(HMDIndex_t, GetPose(), sizeof(DriverPose_t)); }
 	std::string GetSerialNumber() const { return m_sSerialNumber; }
 private:
 	vr::TrackedDeviceIndex_t HMDIndex_t; vr::PropertyContainerHandle_t m_ulPropertyContainer;
+	vr::VRInputComponentHandle_t m_proximitySensorHandle;
 	std::string m_sSerialNumber, m_sModelNumber;
 	int32_t m_nWindowX, m_nWindowY, m_nWindowWidth, m_nWindowHeight, m_nRenderWidth, m_nRenderHeight;
 	float m_flSecondsFromVsyncToPhotons, m_flDisplayFrequency, m_flIPD, m_fZoomWidth, m_fZoomHeight, m_fFOV;
 	bool m_bStereoMode, m_bDebugMode;
 };
 
+// --- CONTROLLER DEVICE DRIVER CLASS ---
 class CSampleControllerDriver : public vr::ITrackedDeviceServerDriver
 {
 	int32_t ControllerIndex;
@@ -1472,24 +2300,29 @@ public:
 	{
 		DriverPose_t pose = { 0 }; pose.poseIsValid = true; pose.result = TrackingResult_Running_OK; pose.deviceIsConnected = true;
 		pose.qWorldFromDriverRotation = HmdQuaternion_Init(1, 0, 0, 0); pose.qDriverFromHeadRotation = HmdQuaternion_Init(1, 0, 0, 0);
-		
-		double dt = max((int)deltaTime.count(), 1) / 1000.0;
+
+		double dt = g_DtSeconds;
 
 		if (ControllerIndex == 1) {
 			if (!SmoothL_Init) {
 				SmoothL_X = MyCtrl.X; SmoothL_Y = MyCtrl.Z; SmoothL_Z = MyCtrl.Y;
 				SmoothL_Init = true;
 			}
-			SmoothL_X += (MyCtrl.X - SmoothL_X) * PositionSmoothness;
-			SmoothL_Y += (MyCtrl.Z - SmoothL_Y) * PositionSmoothness;
-			SmoothL_Z += (MyCtrl.Y - SmoothL_Z) * PositionSmoothness;
+			
+			// FIX: Frame-Rate Independent Smoothing
+			double alpha = 1.0 - std::pow(1.0 - PositionSmoothness, dt * 90.0);
+			SmoothL_X += (MyCtrl.X - SmoothL_X) * alpha;
+			SmoothL_Y += (MyCtrl.Z - SmoothL_Y) * alpha;
+			SmoothL_Z += (MyCtrl.Y - SmoothL_Z) * alpha;
+			
 			if (std::abs(MyCtrl.X - SmoothL_X) < 0.0001) SmoothL_X = MyCtrl.X;
 			if (std::abs(MyCtrl.Z - SmoothL_Y) < 0.0001) SmoothL_Y = MyCtrl.Z;
 			if (std::abs(MyCtrl.Y - SmoothL_Z) < 0.0001) SmoothL_Z = MyCtrl.Y;
+			
 			pose.vecPosition[0] = SmoothL_X;
 			pose.vecPosition[1] = SmoothL_Y;
 			pose.vecPosition[2] = SmoothL_Z;
-			
+
 			double rx = MyCtrl.X - HMDPosX;
 			double ry = MyCtrl.Z - (HMDPosZ - CrouchOffsetZ);
 			double rz = MyCtrl.Y - HMDPosY;
@@ -1502,24 +2335,52 @@ public:
 			double trueVY = (pose.vecPosition[1] - FirstCtrlLastPos[1]) / dt;
 			double trueVZ = (pose.vecPosition[2] - FirstCtrlLastPos[2]) / dt;
 
-			bool headMoving = (HmdOmegaX*HmdOmegaX + HmdOmegaY*HmdOmegaY) > 0.01;  // 0.1 rad/s
+			FirstCtrlLastPos[0] = pose.vecPosition[0]; FirstCtrlLastPos[1] = pose.vecPosition[1]; FirstCtrlLastPos[2] = pose.vecPosition[2];
+
+			// FIX: Robust Velocity Calculation (Low-pass + Clamp)
+			bool headMoving = (HmdOmegaX*HmdOmegaX + HmdOmegaY*HmdOmegaY) > 0.01;
 			if (!headMoving || std::abs(trueVX - fakeVX) > 0.5 || std::abs(trueVY - fakeVY) > 0.5 || std::abs(trueVZ - fakeVZ) > 0.5) {
-				pose.vecVelocity[0] = trueVX; pose.vecVelocity[1] = trueVY; pose.vecVelocity[2] = trueVZ;
+				FirstCtrlVel[0] += (trueVX - FirstCtrlVel[0]) * 0.3; // Smooth out noise
+				FirstCtrlVel[1] += (trueVY - FirstCtrlVel[1]) * 0.3;
+				FirstCtrlVel[2] += (trueVZ - FirstCtrlVel[2]) * 0.3;
 			} else {
-				pose.vecVelocity[0] = fakeVX; pose.vecVelocity[1] = fakeVY; pose.vecVelocity[2] = fakeVZ;
+				FirstCtrlVel[0] += (fakeVX - FirstCtrlVel[0]) * 0.3;
+				FirstCtrlVel[1] += (fakeVY - FirstCtrlVel[1]) * 0.3;
+				FirstCtrlVel[2] += (fakeVZ - FirstCtrlVel[2]) * 0.3;
 			}
 
-			FirstCtrlLastPos[0] = pose.vecPosition[0]; FirstCtrlLastPos[1] = pose.vecPosition[1]; FirstCtrlLastPos[2] = pose.vecPosition[2];
-			
+			// Clamp max velocity to 15 m/s to prevent physics explosions
+			double velMag = sqrt(FirstCtrlVel[0]*FirstCtrlVel[0] + FirstCtrlVel[1]*FirstCtrlVel[1] + FirstCtrlVel[2]*FirstCtrlVel[2]);
+			if (velMag > 15.0) {
+				FirstCtrlVel[0] *= (15.0 / velMag);
+				FirstCtrlVel[1] *= (15.0 / velMag);
+				FirstCtrlVel[2] *= (15.0 / velMag);
+			}
+
+			pose.vecVelocity[0] = FirstCtrlVel[0]; pose.vecVelocity[1] = FirstCtrlVel[1]; pose.vecVelocity[2] = FirstCtrlVel[2];
+
+			if (ShakeTimerL > 0 || ManualShakeL_H || ManualShakeL_V) {
+				double activeIntX = ShakeIntensityL[0];
+				double activeIntY = ShakeIntensityL[1];
+				double activeIntZ = ShakeIntensityL[2];
+
+				if (ManualShakeL_H) activeIntX = 0.03;
+				if (ManualShakeL_V) activeIntY = 0.03;
+
+				pose.vecPosition[0] += sin(ShakeTimeL) * activeIntX;
+				pose.vecPosition[1] += sin(ShakeTimeL * 1.3) * activeIntY;
+				pose.vecPosition[2] += cos(ShakeTimeL) * activeIntZ;
+			}
+
 			pose.vecAngularVelocity[0] = HmdOmegaX; pose.vecAngularVelocity[1] = HmdOmegaY; pose.vecAngularVelocity[2] = 0;
-			
-			pose.qRotation = EulerAngleToQuaternion(DegToRad(-MyCtrl.Yaw), DegToRad(-MyCtrl.Pitch), DegToRad(MyCtrl.Roll));
-						// Velocity deadzone: near-stationary -> report zero, so SteamVR's
-			// ~20ms pose prediction can't amplify residual noise into visible jitter.
+
+			pose.qRotation = MyCtrl.UseQuat ? HmdQuaternion_Init(MyCtrl.QW, MyCtrl.QX, MyCtrl.QY, MyCtrl.QZ)
+			                                : EulerAngleToQuaternion(DegToRad(-MyCtrl.Yaw), DegToRad(-MyCtrl.Pitch), DegToRad(MyCtrl.Roll));
+
 			double linSq = pose.vecVelocity[0]*pose.vecVelocity[0]
 			             + pose.vecVelocity[1]*pose.vecVelocity[1]
 			             + pose.vecVelocity[2]*pose.vecVelocity[2];
-			if (linSq < 0.0025) {  // 0.05 m/s
+			if (linSq < 0.0025) {
 				pose.vecVelocity[0] = 0.0;
 				pose.vecVelocity[1] = 0.0;
 				pose.vecVelocity[2] = 0.0;
@@ -1527,7 +2388,7 @@ public:
 			double angSq = pose.vecAngularVelocity[0]*pose.vecAngularVelocity[0]
 			             + pose.vecAngularVelocity[1]*pose.vecAngularVelocity[1]
 			             + pose.vecAngularVelocity[2]*pose.vecAngularVelocity[2];
-			if (angSq < 0.0025) {  // 0.05 rad/s ≈ 3°/s
+			if (angSq < 0.0025) {
 				pose.vecAngularVelocity[0] = 0.0;
 				pose.vecAngularVelocity[1] = 0.0;
 				pose.vecAngularVelocity[2] = 0.0;
@@ -1538,13 +2399,21 @@ public:
 				SmoothR_X = MyCtrl2.X; SmoothR_Y = MyCtrl2.Z; SmoothR_Z = MyCtrl2.Y;
 				SmoothR_Init = true;
 			}
-			SmoothR_X += (MyCtrl2.X - SmoothR_X) * PositionSmoothness;
-			SmoothR_Y += (MyCtrl2.Z - SmoothR_Y) * PositionSmoothness;
-			SmoothR_Z += (MyCtrl2.Y - SmoothR_Z) * PositionSmoothness;
+
+			// FIX: Frame-Rate Independent Smoothing
+			double alpha = 1.0 - std::pow(1.0 - PositionSmoothness, dt * 90.0);
+			SmoothR_X += (MyCtrl2.X - SmoothR_X) * alpha;
+			SmoothR_Y += (MyCtrl2.Z - SmoothR_Y) * alpha;
+			SmoothR_Z += (MyCtrl2.Y - SmoothR_Z) * alpha;
+
+			if (std::abs(MyCtrl2.X - SmoothR_X) < 0.0001) SmoothR_X = MyCtrl2.X;
+			if (std::abs(MyCtrl2.Z - SmoothR_Y) < 0.0001) SmoothR_Y = MyCtrl2.Z;
+			if (std::abs(MyCtrl2.Y - SmoothR_Z) < 0.0001) SmoothR_Z = MyCtrl2.Y;
+			
 			pose.vecPosition[0] = SmoothR_X;
 			pose.vecPosition[1] = SmoothR_Y;
 			pose.vecPosition[2] = SmoothR_Z;
-			
+
 			double rx = MyCtrl2.X - HMDPosX;
 			double ry = MyCtrl2.Z - (HMDPosZ - CrouchOffsetZ);
 			double rz = MyCtrl2.Y - HMDPosY;
@@ -1557,20 +2426,49 @@ public:
 			double trueVY = (pose.vecPosition[1] - SecondCtrlLastPos[1]) / dt;
 			double trueVZ = (pose.vecPosition[2] - SecondCtrlLastPos[2]) / dt;
 
-			bool headMoving = (HmdOmegaX*HmdOmegaX + HmdOmegaY*HmdOmegaY) > 0.01;  // 0.1 rad/s
+			SecondCtrlLastPos[0] = pose.vecPosition[0]; SecondCtrlLastPos[1] = pose.vecPosition[1]; SecondCtrlLastPos[2] = pose.vecPosition[2];
+
+			// FIX: Robust Velocity Calculation (Low-pass + Clamp)
+			bool headMoving = (HmdOmegaX*HmdOmegaX + HmdOmegaY*HmdOmegaY) > 0.01;
 			if (!headMoving || std::abs(trueVX - fakeVX) > 0.5 || std::abs(trueVY - fakeVY) > 0.5 || std::abs(trueVZ - fakeVZ) > 0.5) {
-				pose.vecVelocity[0] = trueVX; pose.vecVelocity[1] = trueVY; pose.vecVelocity[2] = trueVZ;
+				SecondCtrlVel[0] += (trueVX - SecondCtrlVel[0]) * 0.3;
+				SecondCtrlVel[1] += (trueVY - SecondCtrlVel[1]) * 0.3;
+				SecondCtrlVel[2] += (trueVZ - SecondCtrlVel[2]) * 0.3;
 			} else {
-				pose.vecVelocity[0] = fakeVX; pose.vecVelocity[1] = fakeVY; pose.vecVelocity[2] = fakeVZ;
+				SecondCtrlVel[0] += (fakeVX - SecondCtrlVel[0]) * 0.3;
+				SecondCtrlVel[1] += (fakeVY - SecondCtrlVel[1]) * 0.3;
+				SecondCtrlVel[2] += (fakeVZ - SecondCtrlVel[2]) * 0.3;
 			}
 
-			SecondCtrlLastPos[0] = pose.vecPosition[0]; SecondCtrlLastPos[1] = pose.vecPosition[1]; SecondCtrlLastPos[2] = pose.vecPosition[2];
-			
+			// Clamp max velocity
+			double velMag = sqrt(SecondCtrlVel[0]*SecondCtrlVel[0] + SecondCtrlVel[1]*SecondCtrlVel[1] + SecondCtrlVel[2]*SecondCtrlVel[2]);
+			if (velMag > 15.0) {
+				SecondCtrlVel[0] *= (15.0 / velMag);
+				SecondCtrlVel[1] *= (15.0 / velMag);
+				SecondCtrlVel[2] *= (15.0 / velMag);
+			}
+
+			pose.vecVelocity[0] = SecondCtrlVel[0]; pose.vecVelocity[1] = SecondCtrlVel[1]; pose.vecVelocity[2] = SecondCtrlVel[2];
+
+			if (ShakeTimerR > 0 || ManualShakeR_H || ManualShakeR_V) {
+				double activeIntX = ShakeIntensityR[0];
+				double activeIntY = ShakeIntensityR[1];
+				double activeIntZ = ShakeIntensityR[2];
+
+				if (ManualShakeR_H) activeIntX = 0.03;
+				if (ManualShakeR_V) activeIntY = 0.03;
+
+				pose.vecPosition[0] += sin(ShakeTimeR) * activeIntX;
+				pose.vecPosition[1] += sin(ShakeTimeR * 1.3) * activeIntY;
+				pose.vecPosition[2] += cos(ShakeTimeR) * activeIntZ;
+			}
+
 			pose.vecAngularVelocity[0] = HmdOmegaX; pose.vecAngularVelocity[1] = HmdOmegaY; pose.vecAngularVelocity[2] = 0;
-			
-			pose.qRotation = EulerAngleToQuaternion(DegToRad(-MyCtrl2.Yaw), DegToRad(-MyCtrl2.Pitch), DegToRad(MyCtrl2.Roll));
-			
-						double linSq = pose.vecVelocity[0]*pose.vecVelocity[0]
+
+			pose.qRotation = MyCtrl2.UseQuat ? HmdQuaternion_Init(MyCtrl2.QW, MyCtrl2.QX, MyCtrl2.QY, MyCtrl2.QZ)
+			                                 : EulerAngleToQuaternion(DegToRad(-MyCtrl2.Yaw), DegToRad(-MyCtrl2.Pitch), DegToRad(MyCtrl2.Roll));
+
+			double linSq = pose.vecVelocity[0]*pose.vecVelocity[0]
 			             + pose.vecVelocity[1]*pose.vecVelocity[1]
 			             + pose.vecVelocity[2]*pose.vecVelocity[2];
 			if (linSq < 0.0025) {
@@ -1658,6 +2556,7 @@ private:
 	vr::VRInputComponentHandle_t HAnalog[5];
 };
 
+// --- SERVER DRIVER CLASS ---
 class CServerDriver_Sample : public IServerTrackedDeviceProvider
 {
 public:
@@ -1676,24 +2575,26 @@ private:
 
 CServerDriver_Sample g_serverDriverNull;
 
+// --- INITIALIZATION ---
 EVRInitError CServerDriver_Sample::Init(vr::IVRDriverContext* pDriverContext)
 {
 	VR_INIT_SERVER_DRIVER_CONTEXT(pDriverContext);
-	CRegKey key; TCHAR steamPath[MAX_PATH]; LONG status = key.Open(HKEY_CURRENT_USER, _T("Software\\Valve\\Steam"));
-	if (status == ERROR_SUCCESS) { ULONG regSize = sizeof(steamPath); status = key.QueryStringValue(_T("SteamPath"), steamPath, &regSize); }
-	key.Close();
 
-	g_SteamPathStr = std::string(steamPath);
+	g_DriverFolderStr = GetDriverFolder();
+	if (g_DriverFolderStr.empty()) {
+		vr::VRDriverLog()->Log("FlatVR: FATAL - could not determine driver folder path\n");
+		return VRInitError_Init_Internal;
+	}
 
-	TCHAR configPath[MAX_PATH] = { 0 };
-	_tcscat_s(configPath, sizeof(configPath), steamPath);
-	_tcscat_s(configPath, sizeof(configPath), _T("/steamapps/common/SteamVR/drivers/FlatVR/FlatVR.ini"));
+	vr::VRDriverLog()->Log(("FlatVR: driver folder = " + g_DriverFolderStr + "\n").c_str());
 
-	g_IniPathStr = std::string(configPath);
-	
 	ctrlsConnected = true;
-	
-	LoadConfig();
+
+	LoadProfile("Default");
+
+    // FIX: Dynamic Screen Resolution
+    m_HalfWidth = GetSystemMetrics(SM_CXSCREEN) / 2;
+    m_HalfHeight = GetSystemMetrics(SM_CYSCREEN) / 2;
 
 	g_HookThread = std::thread([]() {
 		g_HookThreadId = GetCurrentThreadId();
@@ -1734,23 +2635,31 @@ void CServerDriver_Sample::Cleanup()
 	}
 }
 
+// --- MAIN RUNFRAME & INPUT STATE ---
 void CServerDriver_Sample::RunFrame()
 {
-	static milliseconds lastMillis = duration_cast<milliseconds>(system_clock::now().time_since_epoch());
-	deltaTime = duration_cast<milliseconds>(system_clock::now().time_since_epoch()) - lastMillis;
-	lastMillis = duration_cast<milliseconds>(system_clock::now().time_since_epoch());
+	static steady_clock::time_point lastFrame = steady_clock::now();
+	auto now = steady_clock::now();
+	auto raw_dt = now - lastFrame;
+	lastFrame = now;
+
+	deltaTime = duration_cast<milliseconds>(raw_dt);
+	g_DtSeconds = duration<double>(raw_dt).count();
 	
-	static FILETIME lastIniMod = GetFileModTime(g_IniPathStr);
+	// FIX: Clamp dt on BOTH sides to prevent velocity spikes on high framerates
+	if (g_DtSeconds <= 0.001) g_DtSeconds = 0.001; // Min 1ms (1000 FPS)
+	else if (g_DtSeconds > 0.25) g_DtSeconds = 1.0 / 90.0; // Max 250ms (4 FPS)
+
 	FILETIME currentIniMod = GetFileModTime(g_IniPathStr);
-	
+
 	if (CompareFileTime(&lastIniMod, &currentIniMod) != 0) {
 		lastIniMod = currentIniMod;
-		LoadConfig(); 
+		LoadConfig();
 	}
 
 	SteamVRHeadsetWindow = FindWindow(NULL, "Headset Window");
 
-	if (IsKeyDown(VK_F1) || IsKeyDown(VK_F7)) SetForegroundWindow(SteamVRHeadsetWindow);
+	if (IsKeyDown(VK_F7)) SetForegroundWindow(SteamVRHeadsetWindow);
 
 	HeadsetWindowFocused = SteamVRHeadsetWindow != 0 && SteamVRHeadsetWindow == GetForegroundWindow() && IsWindowVisible(SteamVRHeadsetWindow);
 
@@ -1761,12 +2670,9 @@ void CServerDriver_Sample::RunFrame()
 		if (resetKey && !PrevSmoothResetKey) {
 			IsSmoothResetting = true;
 			SmoothResetTimer = 0.0;
-			// Record where the hands currently are
 			StartResetX_L = LeftXOffset; StartResetY_L = LeftRotateYOffset; StartResetZ_L = LeftZOffset;
 			StartResetX_R = RightXOffset; StartResetY_R = RightYOffset; StartResetZ_R = RightZOffset;
-    
-			// Instantly kill the targets so the scroll wheel doesn't fight the reset
-			// Capture the starting rotation too (fixes the "snap-back" bug)
+
 			StartResetRotL_X = LeftHandRotOffset[0];
 			StartResetRotL_Y = LeftHandRotOffset[1];
 			StartResetRotL_Z = LeftHandRotOffset[2];
@@ -1804,7 +2710,161 @@ void CServerDriver_Sample::RunFrame()
 		}
 		PrevFPSModeKey = fpsToggle;
 
-		// ==== NEW: [ / ] flip each touchpad between PRESS and TOUCH mode (Vive only) ====
+		// --- SNIPER MODE TOGGLE ---
+		bool sniperKey = IsKeyDown(KEY_ID_SNIPER_MODE);
+		if (SniperToggleMode) {
+			if (sniperKey && !PrevSniperModeKey) {
+				if (FPSModeActive) {
+					SniperModeActive = !SniperModeActive;
+					if (SniperModeActive) {
+						SniperJustStarted = true;
+						SniperExiting = false;
+					} else {
+						SniperExiting = true;
+						SniperExitTimer = 0.0;
+						SniperJustEnded = true;
+					}
+				} else {
+					vr::VRDriverLog()->Log("FlatVR: Sniper Mode requires FPS Mode active.\n");
+				}
+			}
+		} else {
+			if (sniperKey && !PrevSniperModeKey) {
+				if (FPSModeActive) {
+					SniperModeActive = true;
+					SniperJustStarted = true;
+					SniperExiting = false;
+				} else {
+					vr::VRDriverLog()->Log("FlatVR: Sniper Mode requires FPS Mode active.\n");
+				}
+			} else if (!sniperKey && PrevSniperModeKey) {
+				if (SniperModeActive) {
+					SniperModeActive = false;
+					SniperExiting = true;
+					SniperExitTimer = 0.0;
+					SniperJustEnded = true;
+				}
+			}
+		}
+		PrevSniperModeKey = sniperKey;
+		// --- END SNIPER TOGGLE ---
+
+		ManualShakeL_H = IsKeyDown(KEY_ID_SHAKE_LEFT_H);
+		ManualShakeR_H = IsKeyDown(KEY_ID_SHAKE_RIGHT_H);
+		ManualShakeL_V = IsKeyDown(KEY_ID_SHAKE_LEFT_V);
+		ManualShakeR_V = IsKeyDown(KEY_ID_SHAKE_RIGHT_V);
+
+		bool cycleKey = IsKeyDown(KEY_ID_PROFILE_CYCLE);
+		if (cycleKey && !PrevProfileCycleKey) {
+			CycleProfile();
+		}
+		PrevProfileCycleKey = cycleKey;
+
+		bool neckToggle = IsKeyDown(KEY_ID_NECK_MODEL_TOGGLE);
+		if (neckToggle && !PrevNeckToggleKey) {
+			NeckModelEnabled = !NeckModelEnabled;
+			vr::VRDriverLog()->Log(NeckModelEnabled ? "FlatVR: Neck Model ON\n" : "FlatVR: Neck Model OFF\n");
+		}
+		PrevNeckToggleKey = neckToggle;
+
+        // --- SAVE POSE HOTKEYS ---
+        bool saveL = IsKeyDown(KEY_ID_SAVE_POSE_LEFT);
+        if (saveL && !PrevSavePoseL) {
+            std::string poseDir = g_DriverFolderStr + "/Resources/Pose_Config/" + g_ActiveProfileName;
+            CreateDirectoryA((g_DriverFolderStr + "/Resources").c_str(), NULL);
+            CreateDirectoryA((g_DriverFolderStr + "/Resources/Pose_Config").c_str(), NULL);
+            CreateDirectoryA(poseDir.c_str(), NULL);
+
+            int idx = 1;
+            std::string path;
+            do {
+                path = poseDir + "/RSAVE_" + std::to_string(idx) + ".pose";
+                idx++;
+            } while (GetFileAttributesA(path.c_str()) != INVALID_FILE_ATTRIBUTES);
+
+            // Calculate HMD Local Space for the Left Hand (Corrected Math)
+            double effYaw = DegToRad(cameraHMD.Yaw);
+            double effPitch = DegToRad(cameraHMD.Pitch);
+            
+            double rx =  cos(effYaw);
+            double ry = -sin(effYaw);
+            double rz =  0;
+            
+            double fx = -sin(effYaw) * cos(effPitch);
+            double fy = -cos(effYaw) * cos(effPitch);
+            double fz =  sin(effPitch);
+            
+            double ux =  sin(effYaw) * sin(effPitch);
+            double uy =  cos(effYaw) * sin(effPitch);
+            double uz =  cos(effPitch);
+
+            double relX = MyCtrl.X - HMDPosX;
+            double relY = MyCtrl.Y - HMDPosY;
+            double relZ = MyCtrl.Z - (HMDPosZ - CrouchOffsetZ);
+
+            double locX = relX*rx + relY*ry + relZ*rz; // Right
+            double locY = relX*fx + relY*fy + relZ*fz; // Forward
+            double locZ = relX*ux + relY*uy + relZ*uz; // Up
+
+            std::ofstream out(path);
+            if (out.is_open()) {
+                out << "L " << locX << " " << locY << " " << locZ << " "
+                    << (MyCtrl.Yaw - cameraHMD.Yaw) << " " << (MyCtrl.Pitch - cameraHMD.Pitch) << " " << MyCtrl.Roll << " REL=HMD\n";
+                out.close();
+                vr::VRDriverLog()->Log(("FlatVR: Saved Left Hand Pose to " + path + "\n").c_str());
+            }
+        }
+        PrevSavePoseL = saveL;
+
+        bool saveR = IsKeyDown(KEY_ID_SAVE_POSE_RIGHT);
+        if (saveR && !PrevSavePoseR) {
+            std::string poseDir = g_DriverFolderStr + "/Resources/Pose_Config/" + g_ActiveProfileName;
+            CreateDirectoryA((g_DriverFolderStr + "/Resources").c_str(), NULL);
+            CreateDirectoryA((g_DriverFolderStr + "/Resources/Pose_Config").c_str(), NULL);
+            CreateDirectoryA(poseDir.c_str(), NULL);
+
+            int idx = 1;
+            std::string path;
+            do {
+                path = poseDir + "/LSAVE_" + std::to_string(idx) + ".pose";
+                idx++;
+            } while (GetFileAttributesA(path.c_str()) != INVALID_FILE_ATTRIBUTES);
+
+            // Calculate HMD Local Space for the Right Hand (Corrected Math)
+            double effYaw = DegToRad(cameraHMD.Yaw);
+            double effPitch = DegToRad(cameraHMD.Pitch);
+            
+            double rx =  cos(effYaw);
+            double ry = -sin(effYaw);
+            double rz =  0;
+            
+            double fx = -sin(effYaw) * cos(effPitch);
+            double fy = -cos(effYaw) * cos(effPitch);
+            double fz =  sin(effPitch);
+            
+            double ux =  sin(effYaw) * sin(effPitch);
+            double uy =  cos(effYaw) * sin(effPitch);
+            double uz =  cos(effPitch);
+
+            double relX = MyCtrl.X - HMDPosX;
+            double relY = MyCtrl.Y - HMDPosY;
+            double relZ = MyCtrl.Z - (HMDPosZ - CrouchOffsetZ);
+
+            double locX = relX*rx + relY*ry + relZ*rz; // Right
+            double locY = relX*fx + relY*fy + relZ*fz; // Forward
+            double locZ = relX*ux + relY*uy + relZ*uz; // Up
+
+            std::ofstream out(path);
+            if (out.is_open()) {
+                out << "R " << locX << " " << locY << " " << locZ << " "
+                    << (MyCtrl2.Yaw - cameraHMD.Yaw) << " " << (MyCtrl2.Pitch - cameraHMD.Pitch) << " " << MyCtrl2.Roll << " REL=HMD\n";
+                out.close();
+                vr::VRDriverLog()->Log(("FlatVR: Saved Right Hand Pose to " + path + "\n").c_str());
+            }
+        }
+        PrevSavePoseR = saveR;
+        // -------------------------
+
 		if (ControllerType == "vive_controller") {
 			bool ltp = (KEY_ID_LEFT_TRACKPAD_TOGGLE != 0) && IsKeyDown(KEY_ID_LEFT_TRACKPAD_TOGGLE);
 			if (ltp && !PrevLeftTrackpadToggle) {
@@ -1824,7 +2884,6 @@ void CServerDriver_Sample::RunFrame()
 			}
 			PrevRightTrackpadToggle = rtp;
 		}
-		// ================================================================================
 
 		bool swingKey = IsKeyDown(KEY_ID_AUTO_SWING_TOGGLE);
 		if (AutoSwingHoldMode) {
@@ -1842,6 +2901,7 @@ void CServerDriver_Sample::RunFrame()
 			if (LeftHandLocked) {
 				LockedLeftPos[0] = MyCtrl.X; LockedLeftPos[1] = MyCtrl.Y; LockedLeftPos[2] = MyCtrl.Z;
 				LockedLeftYaw = MyCtrl.Yaw; LockedLeftPitch = MyCtrl.Pitch; LockedLeftRoll = MyCtrl.Roll;
+				LockedLeftUseQuat = MyCtrl.UseQuat; LockedLeftQ[0] = MyCtrl.QW; LockedLeftQ[1] = MyCtrl.QX; LockedLeftQ[2] = MyCtrl.QY; LockedLeftQ[3] = MyCtrl.QZ;
 			}
 		}
 		PrevLeftLockKey = lockL;
@@ -1852,6 +2912,7 @@ void CServerDriver_Sample::RunFrame()
 			if (RightHandLocked) {
 				LockedRightPos[0] = MyCtrl2.X; LockedRightPos[1] = MyCtrl2.Y; LockedRightPos[2] = MyCtrl2.Z;
 				LockedRightYaw = MyCtrl2.Yaw; LockedRightPitch = MyCtrl2.Pitch; LockedRightRoll = MyCtrl2.Roll;
+				LockedRightUseQuat = MyCtrl2.UseQuat; LockedRightQ[0] = MyCtrl2.QW; LockedRightQ[1] = MyCtrl2.QX; LockedRightQ[2] = MyCtrl2.QY; LockedRightQ[3] = MyCtrl2.QZ;
 			}
 		}
 		PrevRightLockKey = lockR;
@@ -1859,12 +2920,12 @@ void CServerDriver_Sample::RunFrame()
 		bool pumpKey = IsKeyDown(KEY_ID_PUMP_ACTION);
 		if (pumpKey && !PrevPumpKey) {
 			if (PumpTimer <= 0.0) {
-				PumpTimer = 0.35;
+				PumpTimer = PumpDuration;
 			}
 		}
 		PrevPumpKey = pumpKey;
 
-		float rdt = max((int)deltaTime.count(), 1) / 1000.0f;
+		float rdt = (float)g_DtSeconds;
 		bool freelookHeld = IsKeyDown(KEY_ID_FREELOOK) && !LeftHandIsRotating && !RightHandIsRotating;
 
 		if (freelookHeld) {
@@ -1873,25 +2934,25 @@ void CServerDriver_Sample::RunFrame()
 			FreelookYawOffset += (mousePos.x - m_HalfWidth) * mouseSensetiveYaw * -1;
 			FreelookPitchOffset += (mousePos.y - m_HalfHeight) * mouseSensetivePitch * -1;
 			SetCursorPos(m_HalfWidth, m_HalfHeight);
-			
+
 			if (cameraHMD.Pitch + FreelookPitchOffset > 90) FreelookPitchOffset = 90 - cameraHMD.Pitch;
 			if (cameraHMD.Pitch + FreelookPitchOffset < -90) FreelookPitchOffset = -90 - cameraHMD.Pitch;
-		} 
+		}
 		else {
 			if (FreelookYawOffset != 0.0f || FreelookPitchOffset != 0.0f) {
 				FreelookYawOffset -= FreelookYawOffset * 15.0f * rdt;
 				FreelookPitchOffset -= FreelookPitchOffset * 15.0f * rdt;
-				
+
 				if (std::abs(FreelookYawOffset) < 0.1f) FreelookYawOffset = 0.0f;
 				if (std::abs(FreelookPitchOffset) < 0.1f) FreelookPitchOffset = 0.0f;
-				
+
 				SetCursorPos(m_HalfWidth, m_HalfHeight);
-				
+
 				mouseYaw = cameraHMD.Yaw;
 				mousePitch = cameraHMD.Pitch;
 				mouseHMD = cameraHMD;
 			} else {
-				MouseToYawPitch();	
+				MouseToYawPitch();
 				if (!LeftHandIsRotating && !RightHandIsRotating) cameraHMD = mouseHMD;
 			}
 		}
@@ -1902,6 +2963,25 @@ void CServerDriver_Sample::RunFrame()
 		PrevLeftRotateKey = false;
 		PrevRightRotateKey = false;
 		if (AutoSwingHoldMode) AutoSwingActive = false;
+
+		// FIX: Release remapped keys on focus loss
+		for (int i = 0; i < 256; ++i) {
+			if (g_RemappedKeyActive[i].load(std::memory_order_relaxed)) {
+				auto it = g_KeyRemapper.find(i);
+				if (it != g_KeyRemapper.end()) {
+					INPUT input = {0};
+					input.type = INPUT_KEYBOARD;
+					input.ki.wVk = it->second;
+					input.ki.dwFlags = KEYEVENTF_KEYUP;
+					SendInput(1, &input, sizeof(INPUT));
+				}
+				g_RemappedKeyActive[i] = false;
+			}
+		}
+
+		// FIX: clear swallowed-key state so held keys don't stick after alt-tab
+		for (int i = 0; i < 256; ++i)
+			g_SwallowedKeyState[i].store(false, std::memory_order_relaxed);
 	}
 
 	if (m_pNullHmdLatest) m_pNullHmdLatest->RunFrame();
@@ -1911,6 +2991,11 @@ void CServerDriver_Sample::RunFrame()
 		if (m_pController2) m_pController2->RunFrame();
 		vr::VREvent_t vrEvent;
 		while (vr::VRServerDriverHost()->PollNextEvent(&vrEvent, sizeof(vrEvent))) {
+			if (vrEvent.eventType == vr::VREvent_SceneApplicationChanged) {
+				DWORD pid = vrEvent.data.process.pid;
+				std::string appName = GetAppIdentifierFromPid(pid);
+				LoadProfile(appName);
+			}
 			if (m_pController) m_pController->ProcessEvent(vrEvent);
 			if (m_pController2) m_pController2->ProcessEvent(vrEvent);
 		}
